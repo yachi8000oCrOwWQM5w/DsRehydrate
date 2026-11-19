@@ -17,7 +17,6 @@
 
 > 非 DeepSeek 官方项目，与 DeepSeek 无隶属关系。API 用量和费用由使用者自己的账号承担。
 
-![桌面端界面](mobile/preview-wide.png)
 
 ## 功能
 
