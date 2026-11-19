@@ -1036,6 +1036,10 @@ function userMsgIndexes() {
 function buildMiniTicks() {
   const rail = $("#miniRail");
   if (!rail) return;
+  if (!window.matchMedia("(min-width:900px)").matches) {
+    rail.innerHTML = "";
+    return;
+  }
   rail.innerHTML = "";
 
   const idxs = userMsgIndexes();
@@ -1059,6 +1063,7 @@ function buildMiniTicks() {
 }
 
 function updateMiniActive() {
+  if (!window.matchMedia("(min-width:900px)").matches) return;
   const rail = $("#miniRail"), el = $("#stream");
   if (!rail || !el) return;
   const ticks = [...rail.querySelectorAll(".timeline-tick")];
@@ -1122,8 +1127,7 @@ function showMiniPreview(ratio) {
 
 function bindMinimap() {
   const mini = $("#mini"), rail = $("#miniRail");
-  if (!mini || !rail || S.miniBound) return;
-  S.miniBound = true;
+  if (!mini || !rail) return;
 
   const ratioAt = (e) => {
     const r = rail.getBoundingClientRect();
@@ -1142,8 +1146,19 @@ function bindMinimap() {
     if (e.target.closest(".timeline-tick")) return showMiniPreview(ratioAt(e));
   });
 
-  $("#stream").addEventListener("scroll", updateMiniActive);
-  window.addEventListener("resize", buildMiniTicks);
+  $("#stream").addEventListener("scroll", () => {
+    if (!window.matchMedia("(min-width:900px)").matches) return;
+    if (S.miniRaf) return;
+    S.miniRaf = requestAnimationFrame(() => {
+      S.miniRaf = 0;
+      updateMiniActive();
+    });
+  }, { passive: true });
+
+  if (!S.miniResizeBound) {
+    window.addEventListener("resize", buildMiniTicks);
+    S.miniResizeBound = true;
+  }
 }
 
 function renderChat() {
@@ -1156,7 +1171,7 @@ function renderChat() {
         <button class="icon wide-only" id="btnNewTop" aria-label="新建对话"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <button class="n" id="btnChats"><b id="cname"></b><span id="csub"></span></button>
-      <button class="icon narrow-only" id="btnTimeline" aria-label="时间线"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M12 6.5v4M12 13.5v4"/></svg></button>
+      <button class="icon narrow-only" id="btnTimeline" aria-label="时间线"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3.1 2"/></svg></button>
       <button class="icon" id="btnSet" aria-label="设置"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg></button>
     </div>
     <div class="stream" id="stream"></div>
@@ -1222,22 +1237,31 @@ function renderChat() {
 }
 
 async function hydrateImages(root) {
-  for (const img of root.querySelectorAll("img[data-f]")) {
-    const id = img.dataset.f;
-    let url = S.urls.get(id);
-    if (!url) {
-      const rec = await fileGet(id).catch(() => null);
-      if (!rec) continue;
-      url = URL.createObjectURL(rec.blob);
-      S.urls.set(id, url);
+  const imgs = [...root.querySelectorAll("img[data-f]")];
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < imgs.length) {
+      const img = imgs[cursor++];
+      const id = img.dataset.f;
+      let url = S.urls.get(id);
+      if (!url) {
+        const rec = await fileGet(id).catch(() => null);
+        if (!rec) continue;
+        url = URL.createObjectURL(rec.blob);
+        S.urls.set(id, url);
+      }
+      img.src = url;
     }
-    img.src = url;
-  }
+  };
+
+  await Promise.all(Array.from({ length: 4 }, worker));
 }
 
 
 function renderMath(root) {
   if (!root || typeof window.renderMathInElement !== "function") return;
+  if (!/[\\$]/.test(root.textContent || "")) return;
   try {
     window.renderMathInElement(root, {
       delimiters: [
@@ -1256,7 +1280,7 @@ function renderMath(root) {
 
 function msgNode(m, opts = {}) {
   const u = m.role === "user";
-  const imgs = (m.images || []).map((id) => `<img data-f="${id}" alt="">`).join("");
+  const imgs = (m.images || []).map((id) => `<img data-f="${id}" alt="" loading="lazy" decoding="async">`).join("");
   const think = m.reasoning
     ? `<details class="think"><summary>思考过程</summary><div class="tb">${esc(m.reasoning)}</div></details>` : "";
   const cites = (m.cites || []).length
@@ -1291,7 +1315,9 @@ function renderStream() {
     </div>`;
     return;
   }
-  if (S.showFrom == null) S.showFrom = Math.max(0, total - 60);
+  const mobile = window.matchMedia("(max-width:899px)").matches;
+  const batch = mobile ? 36 : 60;
+  if (S.showFrom == null) S.showFrom = Math.max(0, total - batch);
   const start = Math.min(S.showFrom, total);
 
   let html = "";

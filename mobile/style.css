@@ -394,3 +394,18 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
 .dl-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s ease}
 .dl-help{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}
 .dl-help .btn{display:inline-flex;justify-content:center}
+
+/* 手机端去掉实时毛玻璃，减少滚动重绘 */
+@media (max-width:899px){
+  .top{backdrop-filter:none;-webkit-backdrop-filter:none;background:#fff}
+}
+
+/* 手机端：对话列表改为左侧抽屉 */
+@media (max-width:899px){
+  .drawer-scrim{display:block;position:fixed;inset:0;z-index:55;background:transparent;pointer-events:none}
+  .drawer-scrim.on{pointer-events:auto;background:transparent}
+  .sheet.chat-drawer{inset:0 auto 0 0;width:min(82vw,330px);height:100dvh;background:#fbfcff;
+    transform:translateX(-100%);border-radius:0 18px 18px 0;box-shadow:8px 0 30px rgba(15,23,42,.12);z-index:60}
+  .sheet.chat-drawer.on{transform:none}
+  .sheet.chat-drawer .drawer-brand{display:flex;padding-top:calc(16px + env(safe-area-inset-top))}
+}
