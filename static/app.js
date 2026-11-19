@@ -614,7 +614,7 @@ function apiFieldsHTML(p, cfg) {
     <div class="field">
       <label>API Key</label>
       <input type="password" id="${p}Key" placeholder="${cfg.key_set ? "已保存 · 尾号 " + cfg.key_tail + "（留空不改）" : "sk-..."}">
-      <div class="hint">存在本机 data/config.json，只走服务端直连，不经过浏览器存储。platform.deepseek.com 里建。</div>
+      <div class="hint">存在本机 data/config.json，只走服务端直连，不经过浏览器存储。还没有 Key？<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">去开放平台创建</a>。</div>
     </div>
 
     <div class="field">
