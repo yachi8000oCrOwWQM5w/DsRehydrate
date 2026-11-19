@@ -605,6 +605,7 @@ function renderImport(back) {
     ${back ? '<div class="backline" id="impBack">← 返回对话</div>' : ""}
     <div class="lede">把导出的 ZIP 交给她，<br>在手机上接着聊</div>
     <p class="desc">在 DeepSeek 的手机 App / 客户端里也能导出：<b>生成下载链接 → 复制到浏览器地址栏打开</b>，就能拿到 ZIP。把 ZIP 交给我，后面全在本地完成。</p>
+    <a class="howto" href="https://www.bilibili.com/video/BV1izsh65ET4/" target="_blank" rel="noopener noreferrer">▶ 第一次用？看教学视频</a>
     <div class="pick" id="pick">
       <div class="big">选择 ZIP 文件</div>
       <div class="small">300MB 的包首次解析约 10–20 秒<br>解析期间别切走页面</div>
@@ -2121,7 +2122,7 @@ function openSettings() {
       </div>
       <div class="divider"></div>
       <div class="field"><label>API Key</label><input id="fKey" type="password" placeholder="${cfg.apiKey ? "已保存 " + cfg.apiKey.slice(-4) : "sk-..."}">
-        <div class="hint">只存在这台手机。用低额度的 Key 更稳妥。</div>
+        <div class="hint">只存在这台手机。还没有 Key？<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">去开放平台创建</a>。建议用低额度 Key。</div>
       </div>
       <div class="field"><label>Base URL</label><input id="fBase" value="${esc(cfg.baseUrl)}">
         <div class="hint">官方填 https://api.deepseek.com；校园网关填到 /v1 为止。</div>

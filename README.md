@@ -10,6 +10,8 @@
 
 > 不要只复制域名。`?sharecode=N4GSTG4GTQ` 是访问参数，缺了会返回 403。
 
+**教学视频：** [B 站 · 续语使用教学](https://www.bilibili.com/video/BV1izsh65ET4/)
+
 这是当前正在运行的**公网版本**，不用装 Python、不用建服务器，打开即用：
 
 - 数据只保存在你自己的浏览器（IndexedDB），不上传
