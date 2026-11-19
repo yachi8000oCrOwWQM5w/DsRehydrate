@@ -1221,7 +1221,6 @@ function renderChat() {
   $("#btnSend").onclick = send;
   $("#btnImg").onclick = pickImage;
   $("#btnStop").onclick = () => S.ctrl && S.ctrl.abort();
-  buildMiniTicks();
   bindMinimap();
 
   const ta = $("#input");
