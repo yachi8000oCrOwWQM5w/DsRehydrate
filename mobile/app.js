@@ -184,7 +184,7 @@ const uid = () =>
 const MD = (window.markdownit || (() => null))({
   html: false,
   linkify: true,
-  breaks: false,
+  breaks: true,
   typographer: false,
 });
 
