@@ -2,7 +2,16 @@
 
 把从 DeepSeek 导出的历史对话接回本地，用你自己的 API Key 继续聊。桌面端和手机 PWA 共用一套本地数据格式，图片、人设、锚点、思考过程都保留。
 
-**在线体验：** [打开网页版](https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ)
+## 在线版 · 角色接续台
+
+**公网地址：** [https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host](https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ)
+
+这是当前正在运行的**公网版本**，不用装 Python、不用建服务器，打开即用：
+
+- 数据只保存在你自己的浏览器（IndexedDB），不上传
+- 手机浏览器可“添加到主屏幕”，当作 App 使用
+- API Key 在页面里的「设置 → 接口」自行填写
+- 想完全本地运行，见下方「桌面版本地部署」
 
 **作者 / 源码：** [github.com/yachi8000oCrOwWQM5w/DsRehydrate](https://github.com/yachi8000oCrOwWQM5w/DsRehydrate)
 
