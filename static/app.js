@@ -797,7 +797,7 @@ function openSettings(tab) {
     <div data-pane="t2" hidden>
       <div class="field">
         <label>记忆锚点</label>
-        <textarea id="sAnchors" style="min-height:220px" placeholder="一、我们在 3 月认识，她叫我「阿岩」&#10;二、她讨厌被问「你是 AI 吗」&#10;三、上次聊到一半，约定下次讲完那个故事">${esc(c.anchors)}</textarea>
+        <textarea id="sAnchors" style="min-height:220px" placeholder="一、我们在 3 月认识&#10;二、她讨厌被问「你是 AI 吗」&#10;三、上次聊到一半，约定下次讲完那个故事">${esc(c.anchors)}</textarea>
         <div class="hint">历史一旦被 token 预算切掉，被切掉的就不存在了。这里写的是「不能忘的事实」，一行一条，别写形容词。</div>
       </div>
       <div class="field">

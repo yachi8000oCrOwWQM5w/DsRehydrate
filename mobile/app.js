@@ -405,7 +405,7 @@ async function boot() {
     S.activeId = "demo";
     S.char = {
       name: "绀野灯",
-      persona: "你是绀野灯，长野市的高三学生。说话短，习惯先观察再开口。你叫他「阿岩」。",
+      persona: "你是绀野灯，长野市的高三学生。说话短，习惯先观察再开口。",
       anchors: "一、三月在图书馆认识\n二、她讨厌被问「你是 AI 吗」\n三、上次约好讲完灯塔的故事",
     };
     S.msgs = [
@@ -2115,7 +2115,7 @@ function openSettings() {
       </div>
       <div class="field">
         <label>记忆锚点</label>
-        <textarea id="fAnchors" placeholder="一、我们在 3 月认识，她叫我「阿岩」&#10;二、她讨厌被问「你是 AI 吗」&#10;三、上次聊到一半，约定下次讲完那个故事">${esc(c.anchors || "")}</textarea>
+        <textarea id="fAnchors" placeholder="一、我们在 3 月认识&#10;二、她讨厌被问「你是 AI 吗」&#10;三、上次聊到一半，约定下次讲完那个故事">${esc(c.anchors || "")}</textarea>
         <div class="hint">历史会被 token 预算切掉，切掉的部分只能靠这里记住。一行一条，只写事实。</div>
         <button class="btn ghost" id="btnDistill" style="margin-top:10px">从最近 60 条提炼锚点</button>
       </div>
