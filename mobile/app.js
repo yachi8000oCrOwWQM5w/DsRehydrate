@@ -332,9 +332,11 @@ async function boot() {
     S.activeId = "search-a";
     S.char = { id: "search-a", name: "高等数学", persona: "", anchors: "" };
     S.msgs = a;
-    await kvSet(CHATS_KEY, S.chats).catch(() => {});
-    await kvSet(msgsKey("search-a"), a).catch(() => {});
-    await kvSet(msgsKey("search-b"), b).catch(() => {});
+    // 演示数据只放内存，不写 IndexedDB，避免覆盖真实聊天列表
+    MEM = new Map([
+      [msgsKey("search-a"), a],
+      [msgsKey("search-b"), b],
+    ]);
   } else if (demoParam === "ticks") {
     S.chats = [{ id: "ticks", name: "刻度测试", persona: "", anchors: "", ts: Date.now(), count: 64, last: "多轮对话" }];
     S.activeId = "ticks";
