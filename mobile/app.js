@@ -311,7 +311,31 @@ async function boot() {
   }
 
   const demoParam = new URLSearchParams(location.search).get("demo");
-  if (demoParam === "ticks") {
+  if (demoParam === "search") {
+    const now = Math.floor(Date.now() / 1000);
+    const a = [
+      { role: "user", text: "帮我讲讲麦克劳林公式", ts: now - 7200, reasoning: "", images: [] },
+      { role: "assistant", text: "麦克劳林公式是在 x=0 处的泰勒展开。常用形式有 e^x = 1 + x + x^2/2! + …", ts: now - 7180, reasoning: "", images: [] },
+      { role: "user", text: "再给我一个极限题的例子", ts: now - 7100, reasoning: "", images: [] },
+      { role: "assistant", text: "例如用麦克劳林公式求 lim(x→0) (sin x - x)/x^3，答案是 -1/6。", ts: now - 7080, reasoning: "", images: [] },
+    ];
+    const b = [
+      { role: "user", text: "Python 脚本里怎么算泰勒展开", ts: now - 86000, reasoning: "", images: [] },
+      { role: "assistant", text: "可以用 sympy.series，也可以自己套麦克劳林公式。", ts: now - 85980, reasoning: "", images: [] },
+      { role: "user", text: "那灯塔的故事呢", ts: now - 85000, reasoning: "", images: [] },
+      { role: "assistant", text: "灯塔每隔十二秒扫过一次海面，和麦克劳林没有关系，但先记住这个细节。", ts: now - 84980, reasoning: "", images: [] },
+    ];
+    S.chats = [
+      { id: "search-a", name: "高等数学", persona: "", anchors: "", ts: now - 7000, count: a.length, last: a[a.length - 1].text },
+      { id: "search-b", name: "Python脚本未运行", persona: "", anchors: "", ts: now - 84000, count: b.length, last: b[b.length - 1].text },
+    ];
+    S.activeId = "search-a";
+    S.char = { id: "search-a", name: "高等数学", persona: "", anchors: "" };
+    S.msgs = a;
+    await kvSet(CHATS_KEY, S.chats).catch(() => {});
+    await kvSet(msgsKey("search-a"), a).catch(() => {});
+    await kvSet(msgsKey("search-b"), b).catch(() => {});
+  } else if (demoParam === "ticks") {
     S.chats = [{ id: "ticks", name: "刻度测试", persona: "", anchors: "", ts: Date.now(), count: 64, last: "多轮对话" }];
     S.activeId = "ticks";
     S.char = { id: "ticks", name: "刻度测试", persona: "", anchors: "" };
@@ -798,6 +822,157 @@ async function importSession(idx, btn) {
 /* ---------------------------------------------------------------- 聊天 */
 
 
+function searchDay(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  if (day === midnight) return "今天";
+  if (day === midnight - 86400000) return "昨天";
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function appendHighlighted(node, text, query) {
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  let from = 0, at;
+  while ((at = lower.indexOf(q, from)) !== -1) {
+    if (at > from) node.appendChild(document.createTextNode(text.slice(from, at)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(at, at + q.length);
+    node.appendChild(mark);
+    from = at + q.length;
+  }
+  if (from < text.length) node.appendChild(document.createTextNode(text.slice(from)));
+}
+
+async function openMessageSearch() {
+  const existing = document.querySelector(".search-mask");
+  if (existing) {
+    existing.querySelector("input")?.focus();
+    return;
+  }
+
+  const mask = document.createElement("div");
+  mask.className = "search-mask";
+  mask.innerHTML = `
+    <div class="search-dialog" role="dialog" aria-modal="true" aria-label="搜索聊天内容">
+      <div class="search-head">
+        <svg class="search-ic-lg" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+        <input id="msgSearchInput" type="search" placeholder="搜索聊天内容" autocomplete="off" spellcheck="false">
+        <button class="icon" id="msgSearchClose" aria-label="关闭">✕</button>
+      </div>
+      <div class="search-status" id="msgSearchStatus">正在整理聊天记录…</div>
+      <div class="search-list" id="msgSearchList"></div>
+    </div>`;
+  document.body.appendChild(mask);
+
+  const input = $("#msgSearchInput");
+  const status = $("#msgSearchStatus");
+  const list = $("#msgSearchList");
+  let corpus = null;
+  let current = [];
+  let timer = 0;
+
+  const close = () => {
+    clearTimeout(timer);
+    document.removeEventListener("keydown", onKey);
+    mask.remove();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter" && current.length) jump(current[0]);
+  };
+  document.addEventListener("keydown", onKey);
+  mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
+  $("#msgSearchClose").onclick = close;
+  requestAnimationFrame(() => input.focus());
+
+  const jump = async (r) => {
+    close();
+    if (r.cid !== S.activeId) await switchChat(r.cid);
+    scrollToMsg(r.idx);
+  };
+
+  const buildCorpus = async () => {
+    const out = [];
+    for (const c of S.chats) {
+      const msgs = c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id)).catch(() => null)) || []);
+      msgs.forEach((m, idx) => {
+        const raw = String(m.text || "").replace(/\s+/g, " ").trim();
+        if (!raw) return;
+        out.push({
+          cid: c.id,
+          name: c.name || "未命名对话",
+          idx,
+          ts: m.ts || c.ts || 0,
+          text: raw,
+          lower: raw.toLowerCase(),
+        });
+      });
+    }
+    return out;
+  };
+
+  const run = () => {
+    if (!mask.isConnected || !corpus) return;
+    const q = input.value.trim();
+    list.innerHTML = "";
+    current = [];
+    if (!q) {
+      status.textContent = corpus.length ? "输入关键词，搜索所有对话里的聊天内容" : "还没有可搜索的对话";
+      return;
+    }
+
+    const lq = q.toLowerCase();
+    const hits = [];
+    for (const row of corpus) {
+      const at = row.lower.indexOf(lq);
+      if (at < 0) continue;
+      const from = Math.max(0, at - 34);
+      const to = Math.min(row.text.length, at + q.length + 58);
+      const before = from > 0 ? "…" : "";
+      const after = to < row.text.length ? "…" : "";
+      hits.push({ ...row, snippet: before + row.text.slice(from, to) + after });
+    }
+    hits.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    current = hits;
+    status.textContent = hits.length ? `找到 ${hits.length} 条结果` : "没有找到相关内容";
+
+    for (const r of hits.slice(0, 100)) {
+      const item = document.createElement("button");
+      item.className = "search-item";
+      item.innerHTML = `
+        <span class="search-bubble"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 12a8 8 0 0 1-8 8H8l-4 2 1.1-3.4A8 8 0 1 1 20 12Z"/><path d="M8 11h8M8 14h5"/></svg></span>
+        <span class="search-main">
+          <span class="search-row"><b>${esc(r.name)}</b><i>${esc(searchDay(r.ts))}</i></span>
+          <span class="search-snippet"></span>
+        </span>`;
+      appendHighlighted(item.querySelector(".search-snippet"), r.snippet, q);
+      item.onclick = () => jump(r);
+      list.appendChild(item);
+    }
+    if (hits.length > 100) {
+      const more = document.createElement("div");
+      more.className = "search-more";
+      more.textContent = `只显示前 100 条，共 ${hits.length} 条`;
+      list.appendChild(more);
+    }
+  };
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(run, 140);
+  });
+
+  corpus = await buildCorpus();
+  if (!mask.isConnected) return;
+  status.textContent = corpus.length ? "输入关键词，搜索所有对话里的聊天内容" : "还没有可搜索的对话";
+  run();
+}
+
 function openChatList(focusSearch = false) {
   const existing = document.querySelector(".chat-drawer");
   if (existing) {
@@ -1172,7 +1347,7 @@ function renderChat() {
       <div class="toolset">
         <div class="brandmini" aria-hidden="true"><div class="mark"></div></div>
         <button class="icon" id="btnMenu" aria-label="对话列表"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h11"/></svg></button>
-        <button class="icon wide-only" id="btnSearch" aria-label="搜索对话"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></button>
+        <button class="icon" id="btnSearch" aria-label="搜索聊天内容"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></button>
         <button class="icon wide-only" id="btnNewTop" aria-label="新建对话"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <button class="n" id="btnChats"><b id="cname"></b><span id="csub"></span></button>
@@ -1215,7 +1390,7 @@ function renderChat() {
   $("#btnChats").onclick = () => openChatList();
   if (!S.actBound) { $("#stream").addEventListener("click", onMsgAction); S.actBound = true; }
   $("#btnMenu").onclick = () => openChatList();
-  $("#btnSearch").onclick = () => openChatList(true);
+  $("#btnSearch").onclick = () => openMessageSearch();
   $("#btnNewTop").onclick = () => {
     const name = prompt("新对话的名字", "新对话");
     if (name !== null) createChat(name.trim() || "新对话");
