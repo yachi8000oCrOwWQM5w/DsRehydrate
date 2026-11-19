@@ -1,0 +1,2089 @@
+import { openZip } from "./zip.js";
+import { isSessionJson, parseSession, buildSystem, pickHistory, packAll, unpack, parseText } from "./parse.js";
+import { gatePassed, tryUrlCode, renderGate } from "./gate.js";
+import { makeZip } from "./zipwrite.js";
+
+/* ---------------------------------------------------------------- 存储 */
+
+let _db = null;
+let MEM = null; // IndexedDB 不可用时的内存降级（隐私模式等）
+
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("storage timeout")), ms))]);
+}
+function db() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("rehydrate", 1);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      if (!d.objectStoreNames.contains("kv")) d.createObjectStore("kv");
+      if (!d.objectStoreNames.contains("files")) d.createObjectStore("files", { keyPath: "id" });
+    };
+    r.onsuccess = () => { _db = r.result; res(_db); };
+    r.onerror = () => rej(r.error);
+  });
+}
+async function kvGet(k) {
+  if (MEM) return MEM.get(k);
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("kv", "readonly").objectStore("kv").get(k);
+    t.onsuccess = () => res(t.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+async function kvSet(k, v) {
+  if (MEM) { MEM.set(k, v); return; }
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("kv", "readwrite");
+    t.objectStore("kv").put(v, k);
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+async function filePut(rec) {
+  if (MEM) { MEM.set("file:" + rec.id, rec); return; }
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("files", "readwrite");
+    t.objectStore("files").put(rec);
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+async function fileGet(id) {
+  if (MEM) return MEM.get("file:" + id);
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("files", "readonly").objectStore("files").get(id);
+    t.onsuccess = () => res(t.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+async function fileDel(id) {
+  if (MEM) { MEM.delete("file:" + id); return; }
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("files", "readwrite");
+    t.objectStore("files").delete(id);
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+
+async function wipe() {
+  if (MEM) { MEM.clear(); return; }
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction(["kv", "files"], "readwrite");
+    t.objectStore("kv").clear();
+    t.objectStore("files").clear();
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+
+
+/* ---------------------------------------------------------------- 多对话 */
+
+const CHATS_KEY = "chats";
+const ACTIVE_KEY = "active";
+const msgsKey = (id) => "msgs:" + id;
+
+async function persistChats() {
+  await kvSet(CHATS_KEY, S.chats.map((c) => ({
+    id: c.id, name: c.name, persona: c.persona, anchors: c.anchors,
+    ts: c.ts || 0, count: c.count || 0, last: c.last || "",
+  })));
+}
+
+async function saveActiveMsgs() {
+  if (!S.activeId) return;
+  await kvSet(msgsKey(S.activeId), S.msgs);
+  const c = S.chats.find((x) => x.id === S.activeId);
+  if (c) {
+    c.count = S.msgs.length;
+    c.last = (S.msgs[S.msgs.length - 1] || {}).text || "";
+    c.ts = Date.now();
+    if (S.char) {
+      c.name = S.char.name || c.name;
+      c.persona = S.char.persona || "";
+      c.anchors = S.char.anchors || "";
+    }
+    await persistChats();
+  }
+}
+
+async function switchChat(id) {
+  const c = S.chats.find((x) => x.id === id);
+  if (!c) return;
+  S.activeId = id;
+  S.char = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors };
+  S.msgs = (await kvGet(msgsKey(id))) || [];
+  S.showFrom = null;
+  S.urls.clear();
+  await kvSet(ACTIVE_KEY, id);
+  renderChat();
+}
+
+async function createChat(name) {
+  const id = uid();
+  const c = { id, name: name || "新对话", persona: "", anchors: "", ts: Date.now(), count: 0, last: "" };
+  S.chats.unshift(c);
+  await persistChats();
+  await kvSet(msgsKey(id), []);
+  await switchChat(id);
+  return c;
+}
+
+async function deleteChat(id) {
+  // 顺带清掉这段对话引用的图片，不然库会越用越大
+  const msgs = (await kvGet(msgsKey(id)).catch(() => null)) || [];
+  for (const m of msgs) {
+    for (const fid of m.images || []) await fileDel(fid).catch(() => {});
+  }
+  S.chats = S.chats.filter((c) => c.id !== id);
+  await persistChats();
+  await kvSet(msgsKey(id), []);
+  if (S.activeId === id) {
+    if (S.chats[0]) await switchChat(S.chats[0].id);
+    else {
+      S.activeId = null; S.char = null; S.msgs = []; S.chats = [];
+      await kvSet(ACTIVE_KEY, "");
+      renderImport();
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- 基础 */
+
+const DEFAULT_CFG = {
+  apiKey: "", baseUrl: "https://api.deepseek.com", model: "deepseek-flash",
+  thinking: "off", budget: 128000, maxTokens: 8192, temperature: 1.1, search: false, font: 17,
+};
+const S = {
+  char: null, msgs: [], cfg: { ...DEFAULT_CFG },
+  zip: null, rows: [], busy: false, ctrl: null,
+  urls: new Map(), showFrom: null, pending: [],
+  chats: [], activeId: null,
+};
+const $ = (s) => document.querySelector(s);
+function applyFont() {
+  document.documentElement.style.setProperty("--chat-font", (S.cfg.font || 15) + "px");
+}
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const app = document.getElementById("app");
+const uid = () =>
+  (crypto.randomUUID ? crypto.randomUUID()
+    : "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+/* 极简 markdown：先转义再套结构 */
+const MD = (window.markdownit || (() => null))({
+  html: false,
+  linkify: true,
+  breaks: false,
+  typographer: false,
+});
+
+if (MD) {
+  const baseLinkOpen = MD.renderer.rules.link_open ||
+    ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+  MD.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+    tokens[idx].attrSet("target", "_blank");
+    tokens[idx].attrSet("rel", "noopener noreferrer");
+    return baseLinkOpen(tokens, idx, options, env, self);
+  };
+}
+
+function md(src) {
+  if (!src) return "";
+  let t = String(src).replace(/\r\n/g, "\n");
+
+  // 有些导出会把反斜杠二次转义；这里只在数学定界符上归一
+  t = t.replace(/\\\\\(/g, "\\(")
+       .replace(/\\\\\)/g, "\\)")
+       .replace(/\\\\\[/g, "\\[")
+       .replace(/\\\\\]/g, "\\]");
+
+  // 数学先占位，避免 markdown-it 把 \ 当成转义符吃掉
+  const mathBlocks = [], mathInlines = [];
+  const bt = (expr) => {
+    const tag = `MATHTB${mathBlocks.length}END`;
+    mathBlocks.push({ tag, html: `\\[${expr}\\]` });
+    return "\n\n" + tag + "\n\n";
+  };
+  const it = (expr, raw) => {
+    const tag = `MATHIN${mathInlines.length}END`;
+    mathInlines.push({ tag, html: raw === "dollar" ? `$$${expr}$$` : `\\(${expr}\\)` });
+    return tag;
+  };
+
+  t = t.replace(/\\\[([\s\S]*?)\\\]/g, (m, expr) => bt(expr));
+  t = t.replace(/\$\$([\s\S]*?)\$\$/g, (m, expr) => bt(expr));
+  t = t.replace(/\\\(([\s\S]*?)\\\)/g, (m, expr) => it(expr, "paren"));
+  t = t.replace(/\$([^\n$]+)\$/g, (m, expr) => it(expr, "dollar"));
+
+  let html;
+  if (MD) {
+    html = MD.render(t);
+    for (const b of mathBlocks) {
+      const re = new RegExp(`<p>\\s*${b.tag}\\s*</p>`, "g");
+      html = html.replace(re, `<div class="math-block">${b.html}</div>`);
+      html = html.split(b.tag).join(b.html);
+    }
+    for (const i of mathInlines) html = html.split(i.tag).join(i.html);
+    return html;
+  }
+
+  // 兜底：解析器没加载时至少不漏内容
+  return `<p>${esc(t)}</p>`;
+}
+
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const n = new Date();
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toDateString() === n.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+function alertBox(msg) {
+  const m = document.createElement("div");
+  m.className = "mask";
+  m.innerHTML = `<div class="alert"><div>${esc(msg)}</div><div class="a"><button>知道了</button></div></div>`;
+  m.querySelector("button").onclick = () => m.remove();
+  document.body.appendChild(m);
+}
+
+/* ---------------------------------------------------------------- 启动 */
+
+async function boot() {
+  // 口令门：过了才进 App；?k=口令 可直接放行
+  if (!gatePassed()) {
+    if (!(await tryUrlCode())) {
+      renderGate(app, () => boot());
+      return;
+    }
+  }
+
+  try {
+    S.cfg = { ...DEFAULT_CFG, ...(await withTimeout(kvGet("cfg"), 2500)) };
+    if (S.cfg.font < 17) {
+      S.cfg.font = 17;
+      await kvSet("cfg", S.cfg).catch(() => {});
+    }
+
+    let chats = await withTimeout(kvGet(CHATS_KEY), 2500);
+    if (!Array.isArray(chats)) {
+      // 老版本只有单个角色，迁过来
+      const oldChar = await kvGet("char");
+      const oldMsgs = (await kvGet("msgs")) || [];
+      if (oldChar) {
+        const id = uid();
+        chats = [{
+          id, name: oldChar.name || "未命名",
+          persona: oldChar.persona || "", anchors: oldChar.anchors || "",
+          ts: Date.now(), count: oldMsgs.length,
+          last: (oldMsgs[oldMsgs.length - 1] || {}).text || "",
+        }];
+        await kvSet(msgsKey(id), oldMsgs);
+        await kvSet(CHATS_KEY, chats);
+        await kvSet(ACTIVE_KEY, id);
+      } else {
+        chats = [];
+      }
+    }
+    S.chats = chats;
+
+    const activeId = (await kvGet(ACTIVE_KEY)) || (chats[0] && chats[0].id);
+    const cur = chats.find((c) => c.id === activeId) || chats[0];
+    if (cur) {
+      S.activeId = cur.id;
+      S.char = { id: cur.id, name: cur.name, persona: cur.persona, anchors: cur.anchors };
+      S.msgs = (await kvGet(msgsKey(cur.id))) || [];
+    }
+  } catch {
+    MEM = new Map();
+    S.chats = []; S.activeId = null;
+    S.char = null; S.msgs = []; S.cfg = { ...DEFAULT_CFG };
+  }
+
+  const demoParam = new URLSearchParams(location.search).get("demo");
+  if (demoParam === "ticks") {
+    S.chats = [{ id: "ticks", name: "刻度测试", persona: "", anchors: "", ts: Date.now(), count: 64, last: "多轮对话" }];
+    S.activeId = "ticks";
+    S.char = { id: "ticks", name: "刻度测试", persona: "", anchors: "" };
+    S.msgs = [
+      { role: "user", text: "第 1 个问题：这一段用户说了什么？" , ts: 1763600060, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 1 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600090, reasoning: "", images: [] },
+      { role: "user", text: "第 2 个问题：这一段用户说了什么？" , ts: 1763600120, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 2 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600150, reasoning: "", images: [] },
+      { role: "user", text: "第 3 个问题：这一段用户说了什么？" , ts: 1763600180, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 3 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600210, reasoning: "", images: [] },
+      { role: "user", text: "第 4 个问题：这一段用户说了什么？" , ts: 1763600240, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 4 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600270, reasoning: "", images: [] },
+      { role: "user", text: "第 5 个问题：这一段用户说了什么？" , ts: 1763600300, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 5 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600330, reasoning: "", images: [] },
+      { role: "user", text: "第 6 个问题：这一段用户说了什么？" , ts: 1763600360, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 6 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600390, reasoning: "", images: [] },
+      { role: "user", text: "第 7 个问题：这一段用户说了什么？" , ts: 1763600420, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 7 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600450, reasoning: "", images: [] },
+      { role: "user", text: "第 8 个问题：这一段用户说了什么？" , ts: 1763600480, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 8 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600510, reasoning: "", images: [] },
+      { role: "user", text: "第 9 个问题：这一段用户说了什么？" , ts: 1763600540, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 9 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600570, reasoning: "", images: [] },
+      { role: "user", text: "第 10 个问题：这一段用户说了什么？" , ts: 1763600600, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 10 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600630, reasoning: "", images: [] },
+      { role: "user", text: "第 11 个问题：这一段用户说了什么？" , ts: 1763600660, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 11 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600690, reasoning: "", images: [] },
+      { role: "user", text: "第 12 个问题：这一段用户说了什么？" , ts: 1763600720, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 12 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600750, reasoning: "", images: [] },
+      { role: "user", text: "第 13 个问题：这一段用户说了什么？" , ts: 1763600780, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 13 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600810, reasoning: "", images: [] },
+      { role: "user", text: "第 14 个问题：这一段用户说了什么？" , ts: 1763600840, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 14 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600870, reasoning: "", images: [] },
+      { role: "user", text: "第 15 个问题：这一段用户说了什么？" , ts: 1763600900, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 15 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600930, reasoning: "", images: [] },
+      { role: "user", text: "第 16 个问题：这一段用户说了什么？" , ts: 1763600960, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 16 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763600990, reasoning: "", images: [] },
+      { role: "user", text: "第 17 个问题：这一段用户说了什么？" , ts: 1763601020, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 17 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601050, reasoning: "", images: [] },
+      { role: "user", text: "第 18 个问题：这一段用户说了什么？" , ts: 1763601080, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 18 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601110, reasoning: "", images: [] },
+      { role: "user", text: "第 19 个问题：这一段用户说了什么？" , ts: 1763601140, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 19 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601170, reasoning: "", images: [] },
+      { role: "user", text: "第 20 个问题：这一段用户说了什么？" , ts: 1763601200, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 20 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601230, reasoning: "", images: [] },
+      { role: "user", text: "第 21 个问题：这一段用户说了什么？" , ts: 1763601260, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 21 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601290, reasoning: "", images: [] },
+      { role: "user", text: "第 22 个问题：这一段用户说了什么？" , ts: 1763601320, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 22 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601350, reasoning: "", images: [] },
+      { role: "user", text: "第 23 个问题：这一段用户说了什么？" , ts: 1763601380, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 23 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601410, reasoning: "", images: [] },
+      { role: "user", text: "第 24 个问题：这一段用户说了什么？" , ts: 1763601440, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 24 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601470, reasoning: "", images: [] },
+      { role: "user", text: "第 25 个问题：这一段用户说了什么？" , ts: 1763601500, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 25 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601530, reasoning: "", images: [] },
+      { role: "user", text: "第 26 个问题：这一段用户说了什么？" , ts: 1763601560, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 26 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601590, reasoning: "", images: [] },
+      { role: "user", text: "第 27 个问题：这一段用户说了什么？" , ts: 1763601620, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 27 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601650, reasoning: "", images: [] },
+      { role: "user", text: "第 28 个问题：这一段用户说了什么？" , ts: 1763601680, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 28 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601710, reasoning: "", images: [] },
+      { role: "user", text: "第 29 个问题：这一段用户说了什么？" , ts: 1763601740, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 29 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601770, reasoning: "", images: [] },
+      { role: "user", text: "第 30 个问题：这一段用户说了什么？" , ts: 1763601800, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 30 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601830, reasoning: "", images: [] },
+      { role: "user", text: "第 31 个问题：这一段用户说了什么？" , ts: 1763601860, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 31 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601890, reasoning: "", images: [] },
+      { role: "user", text: "第 32 个问题：这一段用户说了什么？" , ts: 1763601920, reasoning: "", images: [] },
+      { role: "assistant", text: "这是第 32 段回答，内容比较长，用来把正文撑高，方便观察滚动条刻度是否跟随当前阅读位置变化。\n\n- 第一点\n- 第二点" , ts: 1763601950, reasoning: "", images: [] }
+    ];
+  } else if (demoParam === "ds") {
+    S.chats = [{ id: "ds", name: "高等数学", persona: "", anchors: "", ts: Date.now(), count: 2, last: "Markdown 排版测试" }];
+    S.activeId = "ds";
+    S.char = { id: "ds", name: "高等数学", persona: "", anchors: "" };
+    S.msgs = [
+      { role: "user", text: "继续讲泰勒公式的余项", ts: 1763600000, reasoning: "", images: [] },
+      { role: "assistant", text: "### 四、灵魂拷问：后面那个 θ 和 \(o(x^n)\) 到底选哪个？\n\n你看第10-14页，公式末尾跟了一长串带 **θ** 的东西；而第15页的红星总结，末尾写的是 \\(o(x^n)\\)。这两个是同一个公式的两种“马甲”，**对应不同的考试题型**：\n\n1. 带 **θ** 的叫“拉格朗日余项”：\n\n   - 长相：例如 \\(e^x\\) 最后那一项是 \\(\\frac{e^{\\theta x}}{(n+1)!}x^{n+1}\\)。\n\n   - 用途：用来证明不等式或者估算误差。因为你可以用 \\(e^{\\theta x}\\) 的范围（比如 \\(0<\\theta<1\\)）去夹逼出最终的结果。\n\n2. 带 \\(o(x^n)\\) 的叫“皮亚诺余项”：\n\n   - 长相：例如 \\(e^x = 1 + x + \\frac{x^2}{2!} + \\cdots + \\frac{x^n}{n!} + o(x^n)\\)。\n\n   - 用途：纯粹用来求极限。它告诉你，后面的误差比 \\(x^n\\) 还小。\n\n---\n\n🔥 **考场上怎么用（第15页总结）**：\n\n- 当你求极限 \\(\\lim_{x\\to0}\\) 时，直接用第15页的那些带 \\(o(x^n)\\) 的公式。\n\n- 用到第几阶？原则是：展开到分母的阶数一致，或者加减法抵消后不为 0 的那一阶。", ts: 1763600060, reasoning: "", images: [] },
+    ];
+  } else if (demoParam === "math") {
+    S.chats = [{ id: "math", name: "高等数学", persona: "", anchors: "", ts: Date.now(), count: 4, last: "公式渲染测试" }];
+    S.activeId = "math";
+    S.char = { id: "math", name: "高等数学", persona: "", anchors: "" };
+    S.msgs = [
+      { role: "user", text: "当 x_0=0 时，写出 f 的泰勒公式", ts: 1763500000, reasoning: "", images: [] },
+      { role: "assistant", text: "当 \\(x_0=0\\) 时，泰勒公式变成：\n\n\\[\nf(x)=f(0)+f'(0)x+\\frac{f''(0)}{2!}x^2+\\frac{f'''(0)}{3!}x^3+\\cdots\n\\]\n\n其中 \\(\\frac{f^{(4)}(0)}{4!}x^4\\) 是四阶项。", ts: 1763500060, reasoning: "", images: [] },
+      { role: "user", text: "再给一个德摩根律", ts: 1763500120, reasoning: "", images: [] },
+      { role: "assistant", text: "设全集为 \\(U\\)，补集 \\(A^c=U\\setminus A=\\{x\\in U:x\\notin A\\}\\)。\n\n\\[\n(A\\cup B)^c=A^c\\cap B^c\n\\]\n\n任取 \\(x\\in U\\)，则 \\(x\\in(A\\cup B)^c\\iff x\\notin A\\cup B\\)。", ts: 1763500180, reasoning: "", images: [] },
+    ];
+  } else if (demoParam === "1") {
+    S.chats = [{ id: "demo", name: "绀野灯", persona: "", anchors: "", ts: Date.now(), count: 2,
+      last: "**她顿了一下**，手指停在玻璃罐的盖子上。" }];
+    S.activeId = "demo";
+    S.char = {
+      name: "绀野灯",
+      persona: "你是绀野灯，长野市的高三学生。说话短，习惯先观察再开口。你叫他「阿岩」。",
+      anchors: "一、三月在图书馆认识\n二、她讨厌被问「你是 AI 吗」\n三、上次约好讲完灯塔的故事",
+    };
+    S.msgs = [
+      { role: "user", text: "你还记得那个灯塔吗", ts: 1763300000, reasoning: "", images: [] },
+      { role: "assistant", text: "**她顿了一下**，手指停在玻璃罐的盖子上。\n\n> 海风那天很大，灯塔的光每隔十二秒扫过来一次。\n\n- 第一次扫光，你睡着了\n- 第二次扫光，我数到七\n\n`12s` 这个数字我一直记着。", ts: 1763300060, reasoning: "她在问上次的伏笔，先确认她记得，再往下讲。", images: [] },
+    ];
+  }
+
+  applyFont();
+  if (!S.char) renderImport();
+  else renderChat();
+
+  const sheetParam = new URLSearchParams(location.search).get("sheet");
+  if (sheetParam === "1") openSettings();
+  else if (sheetParam === "chats") openChatList();
+  else if (sheetParam === "timeline") openTimeline();
+
+  if (new URLSearchParams(location.search).get("mini") === "open") {
+    setTimeout(() => {
+      $("#mini")?.classList.add("expanded");
+      showMiniPreview(0.65);
+    }, 300);
+  }
+}
+
+/* ---------------------------------------------------------------- 导入 */
+
+function openPasteImport() {
+  const sheet = document.createElement("div");
+  sheet.className = "sheet on";
+  sheet.innerHTML = `
+    <div class="shead"><span>粘贴文本导入</span><button class="icon" id="px">✕</button></div>
+    <div class="sbody">
+      <div class="field"><label>角色名</label><input id="pName" placeholder="留空用默认"></div>
+      <div class="field">
+        <label>内容</label>
+        <textarea id="pText" style="min-height:240px" placeholder="## User&#10;……&#10;&#10;## Assistant&#10;……"></textarea>
+        <div class="hint">支持 <code>## User</code> / <code>## Assistant</code> 分节，也支持每行开头的「用户:」「助手:」。</div>
+      </div>
+      <button class="btn" id="pOk">导入</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  $("#px").onclick = () => sheet.remove();
+
+  $("#pOk").onclick = async () => {
+    const msgs = parseText($("#pText").value);
+    if (!msgs.length) return alertBox("没解析出消息，检查一下分节格式");
+    const name = $("#pName").value.trim() || "从文本导入";
+    const base = Math.floor(Date.now() / 1000);
+    const list = msgs.map((m, i) => ({
+      role: m.role, text: m.text, ts: base + i, reasoning: "", images: [],
+    }));
+    const cid = uid();
+    S.chats.unshift({
+      id: cid, name,
+      persona: msgs[0].role === "user" ? msgs[0].text : "", anchors: "",
+      ts: Date.now(), count: list.length, last: (list[list.length - 1] || {}).text || "",
+    });
+    await persistChats();
+    await kvSet(msgsKey(cid), list);
+    sheet.remove();
+    await switchChat(cid);
+  };
+}
+
+function renderImport(back) {
+  app.innerHTML = `<div class="screen"><div class="intro">
+    <div class="brand"><div class="mark"></div><div><h1>角色接续台</h1><p>手机本地版 · 不上传</p></div></div>
+    ${back ? '<div class="backline" id="impBack">← 返回对话</div>' : ""}
+    <div class="lede">把导出的 ZIP 交给她，<br>在手机上接着聊</div>
+    <p class="desc">在 DeepSeek 的手机 App / 客户端里也能导出：<b>生成下载链接 → 复制到浏览器地址栏打开</b>，就能拿到 ZIP。把 ZIP 交给我，后面全在本地完成。</p>
+    <div class="pick" id="pick">
+      <div class="big">选择 ZIP 文件</div>
+      <div class="small">300MB 的包首次解析约 10–20 秒<br>解析期间别切走页面</div>
+    </div>
+    <div class="paste" id="pickPaste">不想传大包？粘贴文本导入</div>
+    <div class="prog" id="prog"></div>
+    <div class="bar" id="bar"><i></i></div>
+    <div class="tips">
+      <b>手机上怎么导</b><br>App / 客户端里找到「导出所有历史对话」，生成链接后复制到浏览器地址栏打开下载；电脑网页版也可以。<br><br>
+      <b>数据去哪了</b><br>只存在这台手机的浏览器里。关掉网页还在，卸载浏览器才会没。
+    </div>
+  </div></div>`;
+
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".zip,application/zip,application/x-zip-compressed";
+  inp.style.display = "none";
+  document.body.appendChild(inp);
+  $("#pick").onclick = () => inp.click();
+  $("#pickPaste").onclick = openPasteImport;
+  if (back) $("#impBack").onclick = back;
+  inp.onchange = () => { if (inp.files[0]) handleZip(inp.files[0]); };
+}
+
+function setProg(text, pct) {
+  const p = $("#prog"), b = $("#bar");
+  if (p) p.textContent = text || "";
+  if (b) {
+    b.classList.toggle("on", typeof pct === "number");
+    if (typeof pct === "number") b.firstElementChild.style.width = pct + "%";
+  }
+}
+
+async function handleZip(file) {
+  try {
+    setProg("正在读取目录…", 2);
+    const zip = await openZip(file);
+    S.zip = zip;
+
+    const own = zip.entries.find((e) => /(^|\/)rehydrate-manifest\.json$/i.test(e.name));
+    if (own) {
+      setProg("", null);
+      await importOwnZip(zip, own);
+      return;
+    }
+
+    const sig = "idx:" + file.name + ":" + file.size;
+    let rows = await kvGet(sig).catch(() => null);
+
+    if (Array.isArray(rows) && rows.length) {
+      rows = rows
+        .map((r) => ({ ...r, entry: zip.entries.find((e) => e.name === r.name) }))
+        .filter((r) => r.entry);
+      setProg("", null);
+      if (rows.length) {
+        S.rows = rows;
+        renderPicker(rows, S.chats.length ? () => renderChat() : null);
+        return;
+      }
+    }
+
+    const jsons = zip.entries.filter((e) => isSessionJson(e.name));
+    const list = [];
+    for (let i = 0; i < jsons.length; i++) {
+      const e = jsons[i];
+      if (i % 8 === 0) setProg(`解析对话 ${i + 1} / ${jsons.length}`, 5 + (i / jsons.length) * 85);
+      let d;
+      try {
+        d = JSON.parse(new TextDecoder().decode(await zip.read(e)));
+      } catch { continue; }
+      const c = parseSession(d);
+      if (c) list.push({ entry: e, title: c.title, count: c.count, files: c.fileCount, preview: c.preview });
+    }
+    list.sort((a, b) => b.count - a.count);
+    setProg("", null);
+    if (!list.length) return alertBox("这个包里没找到能识别的对话。确认是「导出所有历史对话」下回来的 ZIP。");
+
+    // 记住目录，下次选同一个包不用再解一遍
+    await kvSet(sig, list.map((r) => ({
+      name: r.entry.name, title: r.title, count: r.count, files: r.files, preview: r.preview,
+    }))).catch(() => {});
+
+    S.rows = list;
+    renderPicker(list, S.chats.length ? () => renderChat() : null);
+  } catch (e) {
+    setProg("", null);
+    alertBox("解析失败：" + (e.message || e));
+  }
+}
+
+function renderPicker(rows, back) {
+  app.innerHTML = `<div class="screen"><div class="picker">
+    <div class="phead">
+      <div class="t">选一段要接续的对话</div>
+      <div class="s">按条数排序，共 ${rows.length} 段${back ? ' · <span id="pBack">返回对话</span>' : ""}</div>
+    </div>
+    <div class="plist" id="plist"></div>
+  </div></div>`;
+  if (back) $("#pBack").onclick = back;
+  const list = $("#plist");
+  rows.forEach((r, i) => {
+    const b = document.createElement("button");
+    b.className = "item";
+    b.innerHTML = `<div class="r1"><b></b><span></span></div><div class="r2"></div>`;
+    b.querySelector("b").textContent = r.title;
+    b.querySelector("span").textContent = r.count + " 条";
+    b.querySelector(".r2").textContent = (r.files ? r.files + " 个附件 · " : "") + (r.preview || "").slice(0, 42);
+    b.onclick = () => importSession(i, b);
+    list.appendChild(b);
+  });
+}
+
+const normPath = (n) => {
+  const i = n.indexOf("chat_sessions/");
+  return i >= 0 ? n.slice(i) : n;
+};
+
+async function importSession(idx, btn) {
+  const row = S.rows[idx];
+  if (!row) return;
+  btn.disabled = true;
+  const old = btn.innerHTML;
+  btn.innerHTML = `<div class="r1"><b>正在导入…</b></div>`;
+  try {
+    const raw = await S.zip.read(row.entry);
+    const conv = parseSession(JSON.parse(new TextDecoder().decode(raw)));
+    if (!conv) throw new Error("这段对话解析失败");
+
+    const wanted = new Set();
+    for (const m of conv.messages) for (const f of m.files || []) wanted.add(normPath(f.path));
+
+    const fileMap = new Map();
+    for (const e of S.zip.entries) {
+      const n = normPath(e.name);
+      if (n.includes("_files/")) fileMap.set(n, e);
+    }
+
+    let bytes = 0, copied = 0, skipped = 0;
+    const CAP = 80 * 1024 * 1024;
+    for (const m of conv.messages) {
+      const imgs = [];
+      for (const f of m.files || []) {
+        if (!f.image) { skipped++; continue; }
+        const e = fileMap.get(normPath(f.path));
+        if (!e) { skipped++; continue; }
+        if (bytes > CAP) { skipped++; continue; }
+        try {
+          const data = await S.zip.read(e);
+          const id = uid();
+          await filePut({ id, name: f.name, blob: new Blob([data]) });
+          imgs.push(id);
+          bytes += data.length;
+          copied++;
+        } catch { skipped++; }
+      }
+      m.images = imgs;
+      delete m.files;
+    }
+
+    const msgs = conv.messages.map((m) => ({
+      role: m.role, text: m.text, ts: m.ts,
+      reasoning: m.reasoning || "", images: m.images || [],
+    }));
+
+    const cid = uid();
+    S.chats.unshift({
+      id: cid, name: conv.title,
+      persona: conv.firstUser || "", anchors: "",
+      ts: Date.now(), count: msgs.length, last: (msgs[msgs.length - 1] || {}).text || "",
+    });
+    await persistChats();
+    await kvSet(msgsKey(cid), msgs);
+    await switchChat(cid);
+    if (copied || skipped) {
+      setTimeout(() => alertBox(`导入完成：${msgs.length} 条消息，${copied} 张图片${skipped ? `，${skipped} 个附件因体积或类型跳过` : ""}。人设暂用第一句预填，记得去设置里改。`), 300);
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = old;
+    alertBox("导入失败：" + (e.message || e));
+  }
+}
+
+/* ---------------------------------------------------------------- 聊天 */
+
+
+function openChatList(focusSearch = false) {
+  const existing = document.querySelector(".chat-drawer");
+  if (existing) {
+    existing.querySelector("#cx")?.click();
+    return;
+  }
+  const sheet = document.createElement("div");
+  sheet.className = "sheet chat-drawer";
+
+  const scrim = document.createElement("div");
+  scrim.className = "drawer-scrim";
+  document.body.appendChild(scrim);
+  document.body.classList.add("drawer-open");
+
+  sheet.innerHTML = `
+    <div class="drawer-brand">
+      <div class="logo"></div>
+      <span>角色接续台</span>
+    </div>
+    <div class="shead">
+      <span>对话</span>
+      <span class="sact">
+        <button class="mini" id="newChat">＋ 新建</button>
+        <button class="icon" id="cx" aria-label="关闭">✕</button>
+      </span>
+    </div>
+    <div class="drawer-search">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+      <input id="chatSearch" placeholder="搜索对话" autocomplete="off">
+    </div>
+    <div class="sbody" id="chatBody">
+      <button class="btn ghost" id="moreImport" style="margin-bottom:10px">＋ 从压缩包再选一段</button>
+      <div id="clist"></div>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => {
+    sheet.classList.add("on");
+    scrim.classList.add("on");
+    if (focusSearch) $("#chatSearch")?.focus();
+  });
+
+  const close = () => {
+    sheet.classList.remove("on");
+    scrim.classList.remove("on");
+    document.body.classList.remove("drawer-open");
+    setTimeout(() => { sheet.remove(); scrim.remove(); }, 240);
+  };
+  $("#cx").onclick = close;
+
+  $("#moreImport").onclick = () => {
+    close();
+    if (S.zip && S.rows.length) renderPicker(S.rows, () => renderChat());
+    else renderImport(() => renderChat());
+  };
+
+  $("#newChat").onclick = async () => {
+    const name = prompt("新对话的名字", "新对话");
+    if (name === null) return;
+    await createChat(name.trim() || "新对话");
+    renderRows($("#chatSearch")?.value || "");
+  };
+
+  const groupsOf = (ts) => {
+    const d = new Date(ts || Date.now());
+    const now = new Date();
+    const start = new Date(now); start.setHours(0, 0, 0, 0);
+    const diff = start - new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (diff === 0) return "今天";
+    if (diff === 86400000) return "昨天";
+    if (diff <= 7 * 86400000) return "7 天内";
+    if (diff <= 30 * 86400000) return "30 天内";
+    return "更早";
+  };
+
+  const renderRows = (query = "") => {
+    const box = $("#clist");
+    if (!box) return;
+    const q = query.trim().toLowerCase();
+    const sorted = [...S.chats]
+      .filter((c) => !q || (c.name || "").toLowerCase().includes(q) || (c.last || "").toLowerCase().includes(q))
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+    if (!sorted.length) {
+      box.innerHTML = `<div class="hint">${q ? "没找到匹配的对话" : "还没有对话，点右上角新建"}</div>`;
+      return;
+    }
+
+    box.innerHTML = "";
+    let lastGroup = "";
+    sorted.forEach((c) => {
+      const g = groupsOf(c.ts);
+      if (g !== lastGroup) {
+        const h = document.createElement("div");
+        h.className = "drawer-group";
+        h.textContent = g;
+        box.appendChild(h);
+        lastGroup = g;
+      }
+      const row = document.createElement("div");
+      row.className = "crow" + (c.id === S.activeId ? " on" : "");
+      row.innerHTML = `<div class="cr1"><b></b><span></span></div><div class="cr2"></div>
+        <button class="cedit" aria-label="更多">⋯</button>`;
+      row.querySelector("b").textContent = c.name || "未命名";
+      row.querySelector("span").textContent = (c.count || 0) + " 条";
+      row.querySelector(".cr2").textContent =
+        (c.last || "还没有消息").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+      row.onclick = async () => {
+        await switchChat(c.id);
+        renderRows($("#chatSearch")?.value || "");
+      };
+      row.querySelector(".cedit").onclick = (e) => {
+        e.stopPropagation();
+        chatMenu(c, close, renderRows);
+      };
+      box.appendChild(row);
+    });
+  };
+
+  $("#chatSearch").oninput = (e) => renderRows(e.target.value);
+  renderRows();
+}
+
+function chatMenu(c, closeList, refreshRows) {
+  const m = document.createElement("div");
+  m.className = "mask";
+  m.innerHTML = `<div class="alert">
+    <div style="font-weight:500;margin-bottom:4px">${esc(c.name || "未命名")}</div>
+    <div style="color:var(--muted);font-size:13px">${c.count || 0} 条对话</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
+      <button class="btn ghost" id="mRename">重命名</button>
+      <button class="btn danger" id="mDelete">删除这段对话</button>
+      <button class="btn ghost" id="mCancel">取消</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  m.querySelector("#mCancel").onclick = close;
+  m.onclick = (e) => { if (e.target === m) close(); };
+
+  m.querySelector("#mRename").onclick = async () => {
+    const name = prompt("新名字", c.name || "");
+    if (name === null) return;
+    const nn = name.trim();
+    if (!nn) return;
+    const rec = S.chats.find((x) => x.id === c.id);
+    if (!rec) return;
+    rec.name = nn;
+    if (S.activeId === c.id) {
+      S.char.name = nn;
+      $("#cname").textContent = nn;
+    }
+    await persistChats();
+    close();
+    refreshRows?.($("#chatSearch")?.value || "");
+  };
+
+  m.querySelector("#mDelete").onclick = async () => {
+    if (!confirm(`删掉「${c.name || "未命名"}」？这段对话就没了，不能恢复。`)) return;
+    close();
+    await deleteChat(c.id);
+    if (!S.chats.length) closeList();
+    else refreshRows?.($("#chatSearch")?.value || "");
+  };
+}
+
+
+async function saveCfg() { await kvSet("cfg", S.cfg); }
+
+function syncPills() {
+  const t = $("#pillThink"), s = $("#pillSearch");
+  if (t) t.classList.toggle("on", S.cfg.thinking === "on");
+  if (s) s.classList.toggle("on", !!S.cfg.search);
+}
+
+async function togglePill(which) {
+  if (which === "thinking") {
+    S.cfg.thinking = S.cfg.thinking === "on" ? "off" : "on";
+  } else {
+    S.cfg.search = !S.cfg.search;
+  }
+  syncPills();
+  await saveCfg();
+}
+
+
+async function onMsgAction(e) {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const idx = Number(b.dataset.idx);
+  const m = S.msgs[idx];
+  if (!m) return;
+  const act = b.dataset.act;
+
+  if (act === "copy") {
+    try {
+      await navigator.clipboard.writeText(m.text || "");
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = m.text || "";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    b.textContent = "已复制";
+    setTimeout(() => { if (b.isConnected) b.textContent = "复制"; }, 1500);
+    return;
+  }
+
+  if (act === "speak") {
+    if (!("speechSynthesis" in window)) return alertBox("这个浏览器不支持朗读");
+    if (speechSynthesis.speaking) { speechSynthesis.cancel(); return; }
+    const u = new SpeechSynthesisUtterance(m.text || "");
+    u.lang = "zh-CN";
+    u.rate = 0.95;
+    speechSynthesis.speak(u);
+    b.textContent = "停止";
+    u.onend = () => { if (b.isConnected) b.textContent = "朗读"; };
+    return;
+  }
+
+  if (act === "del") {
+    if (!confirm("删掉这条消息？")) return;
+    S.msgs.splice(idx, 1);
+    await saveActiveMsgs();
+    renderStream();
+    return;
+  }
+
+  if (act === "regen") {
+    await regenerate();
+  }
+}
+
+
+function userMsgIndexes() {
+  const idxs = [];
+  S.msgs.forEach((m, i) => { if (m.role === "user") idxs.push(i); });
+  return idxs;
+}
+
+function buildMiniTicks() {
+  const rail = $("#miniRail");
+  if (!rail) return;
+  rail.innerHTML = "";
+
+  const idxs = userMsgIndexes();
+  if (!idxs.length) return;
+
+  const step = Math.max(1, Math.ceil(idxs.length / 80));
+  const samples = [];
+  for (let i = 0; i < idxs.length; i += step) samples.push(idxs[i]);
+  if (samples[samples.length - 1] !== idxs[idxs.length - 1]) samples.push(idxs[idxs.length - 1]);
+
+  rail.innerHTML = samples.map((idx) => {
+    const pct = (idxs.indexOf(idx) / Math.max(1, idxs.length - 1)) * 100;
+    return `<button type="button" class="timeline-tick" data-idx="${idx}"
+      style="top:${pct.toFixed(3)}%" title="${esc((S.msgs[idx].text || "").slice(0, 40))}"></button>`;
+  }).join("");
+
+  rail.querySelectorAll(".timeline-tick").forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
+  });
+  updateMiniActive();
+}
+
+function updateMiniActive() {
+  const rail = $("#miniRail"), el = $("#stream");
+  if (!rail || !el) return;
+  const ticks = [...rail.querySelectorAll(".timeline-tick")];
+  if (!ticks.length) return;
+
+  const nodes = [...el.querySelectorAll(".msg[data-idx]")];
+  const anchor = el.getBoundingClientRect().top + el.clientHeight * 0.35;
+  let viewing = Number(ticks[ticks.length - 1].dataset.idx);
+  for (const node of nodes) {
+    const r = node.getBoundingClientRect();
+    if (r.bottom >= anchor) {
+      viewing = Number(node.dataset.idx);
+      break;
+    }
+  }
+
+  // 取不晚于当前位置的最近一个用户消息刻度
+  let best = ticks[0];
+  let bestD = Infinity;
+  ticks.forEach((t) => {
+    const idx = Number(t.dataset.idx);
+    const d = idx <= viewing ? viewing - idx : idx - viewing + 1e6;
+    if (d < bestD) { bestD = d; best = t; }
+  });
+  ticks.forEach((t) => t.classList.toggle("active", t === best));
+}
+
+function showMiniPreview(ratio) {
+  const box = $("#miniItems");
+  if (!box) return;
+  const idxs = userMsgIndexes();
+  if (!idxs.length) { box.innerHTML = ""; return; }
+
+  const r = Math.max(0, Math.min(1, ratio));
+  const center = Math.round(r * (idxs.length - 1));
+  const from = Math.max(0, center - 4);
+  const to = Math.min(idxs.length, center + 5);
+  const rows = [];
+
+  for (let i = from; i < to; i++) {
+    const idx = idxs[i];
+    const m = S.msgs[idx];
+    const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
+    rows.push(`<button type="button" class="timeline-row" data-idx="${idx}">
+      <span>${esc(text.slice(0, 46) || "（用户消息）")}</span><i></i>
+    </button>`);
+  }
+
+  box.innerHTML = rows.join("");
+  box.querySelectorAll(".timeline-row").forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
+  });
+
+  const panel = $("#miniPanel");
+  if (panel) {
+    const h = Math.min(300, 12 + rows.length * 28);
+    const y = Math.max(70, Math.min(window.innerHeight - h - 20, r * window.innerHeight - h / 2));
+    panel.style.top = y + "px";
+  }
+}
+
+function bindMinimap() {
+  const mini = $("#mini"), rail = $("#miniRail");
+  if (!mini || !rail || S.miniBound) return;
+  S.miniBound = true;
+
+  const ratioAt = (e) => {
+    const r = rail.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height)));
+  };
+
+  mini.addEventListener("mouseenter", (e) => {
+    mini.classList.add("expanded");
+    showMiniPreview(ratioAt(e));
+  });
+  mini.addEventListener("mousemove", (e) => {
+    if (mini.classList.contains("expanded")) showMiniPreview(ratioAt(e));
+  });
+  mini.addEventListener("mouseleave", () => mini.classList.remove("expanded"));
+  rail.addEventListener("click", (e) => {
+    if (e.target.closest(".timeline-tick")) return showMiniPreview(ratioAt(e));
+  });
+
+  $("#stream").addEventListener("scroll", updateMiniActive);
+  window.addEventListener("resize", buildMiniTicks);
+}
+
+function renderChat() {
+  app.innerHTML = `<div class="screen">
+    <div class="top">
+      <div class="toolset">
+        <div class="brandmini" aria-hidden="true"><div class="mark"></div></div>
+        <button class="icon" id="btnMenu" aria-label="对话列表"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h11"/></svg></button>
+        <button class="icon wide-only" id="btnSearch" aria-label="搜索对话"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></button>
+        <button class="icon wide-only" id="btnNewTop" aria-label="新建对话"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <button class="n" id="btnChats"><b id="cname"></b><span id="csub"></span></button>
+      <button class="icon narrow-only" id="btnTimeline" aria-label="时间线"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M12 6.5v4M12 13.5v4"/></svg></button>
+      <button class="icon" id="btnSet" aria-label="设置"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg></button>
+    </div>
+    <div class="stream" id="stream"></div>
+    <div class="composer">
+      <div class="pending" id="pending"></div>
+      <div class="cinner">
+        <div class="pills">
+          <button class="pill" id="pillThink" type="button"><span class="pic">◐</span>深度思考</button>
+          <button class="pill" id="pillSearch" type="button"><span class="pic">◎</span>智能搜索</button>
+        </div>
+        <div class="irow">
+          <button class="imgbtn" id="btnImg" type="button" aria-label="发图片">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <textarea id="input" rows="1" placeholder="发消息…"></textarea>
+          <button class="send" id="btnSend" aria-label="发送">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 6l6 6-6 6"/></svg>
+          </button>
+          <button class="send stop" id="btnStop" hidden aria-label="停止">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="cmeta" id="cmeta"></div>
+    </div>
+    <div class="timeline-rail" id="mini" aria-label="时间线">
+      <div class="mini-rail" id="miniRail"></div>
+      <div class="timeline-pop" id="miniPanel"><div class="timeline-items" id="miniItems"></div></div>
+    </div>
+  </div>`;
+
+  $("#cname").textContent = S.char.name || "未命名";
+  $("#csub").textContent = `${S.msgs.length} 条 · ${S.char.persona ? "已设人设" : "还没设人设"}`;
+  $("#btnSet").onclick = openSettings;
+  $("#btnTimeline").onclick = openTimeline;
+  $("#btnChats").onclick = () => openChatList();
+  if (!S.actBound) { $("#stream").addEventListener("click", onMsgAction); S.actBound = true; }
+  $("#btnMenu").onclick = () => openChatList();
+  $("#btnSearch").onclick = () => openChatList(true);
+  $("#btnNewTop").onclick = () => {
+    const name = prompt("新对话的名字", "新对话");
+    if (name !== null) createChat(name.trim() || "新对话");
+  };
+  $("#pillThink").onclick = () => togglePill("thinking");
+  $("#pillSearch").onclick = () => togglePill("search");
+  syncPills();
+  $("#btnSend").onclick = send;
+  $("#btnImg").onclick = pickImage;
+  $("#btnStop").onclick = () => S.ctrl && S.ctrl.abort();
+  buildMiniTicks();
+  bindMinimap();
+
+  const ta = $("#input");
+  ta.addEventListener("input", () => {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 132) + "px";
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+
+  renderStream();
+}
+
+async function hydrateImages(root) {
+  for (const img of root.querySelectorAll("img[data-f]")) {
+    const id = img.dataset.f;
+    let url = S.urls.get(id);
+    if (!url) {
+      const rec = await fileGet(id).catch(() => null);
+      if (!rec) continue;
+      url = URL.createObjectURL(rec.blob);
+      S.urls.set(id, url);
+    }
+    img.src = url;
+  }
+}
+
+
+function renderMath(root) {
+  if (!root || typeof window.renderMathInElement !== "function") return;
+  try {
+    window.renderMathInElement(root, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "\\[", right: "\\]", display: true },
+        { left: "\\(", right: "\\)", display: false },
+        { left: "$", right: "$", display: false },
+      ],
+      ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+      throwOnError: false,
+      strict: "ignore",
+      trust: false,
+    });
+  } catch (_) {}
+}
+
+function msgNode(m, opts = {}) {
+  const u = m.role === "user";
+  const imgs = (m.images || []).map((id) => `<img data-f="${id}" alt="">`).join("");
+  const think = m.reasoning
+    ? `<details class="think"><summary>思考过程</summary><div class="tb">${esc(m.reasoning)}</div></details>` : "";
+  const cites = (m.cites || []).length
+    ? `<div class="cites"><span>来源</span>${m.cites.map((c) =>
+        `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title || new URL(c.url).hostname)}</a>`).join("")}</div>` : "";
+  const acts = typeof opts.idx === "number"
+    ? `<div class="mact">
+        <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
+        ${u ? "" : `<button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>`}
+        <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
+        ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
+       </div>` : "";
+  return `<div class="msg ${u ? "u" : ""}" ${typeof opts.idx === "number" ? `data-idx="${opts.idx}"` : ""}><div class="body">
+    ${think}
+    <div class="text">${md(m.text)}</div>
+    ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
+    ${cites}
+    ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
+    ${acts}
+  </div></div>`;
+}
+
+function renderStream() {
+  const el = $("#stream");
+  const total = S.msgs.length;
+
+  if (!total) {
+    el.innerHTML = `<div class="empty-chat">
+      <div class="eo-ring"><span></span></div>
+      <div class="eo-t">跟她说点什么吧</div>
+      <div class="eo-s">你写的第一句，就是这段对话的开始</div>
+    </div>`;
+    return;
+  }
+  if (S.showFrom == null) S.showFrom = Math.max(0, total - 60);
+  const start = Math.min(S.showFrom, total);
+
+  let html = "";
+  if (start > 0) {
+    html += `<div class="more"><button id="btnMore">载入更早的 ${Math.min(40, start)} 条</button></div>`;
+  }
+  html += S.msgs.slice(start).map((m, i) => msgNode(m, {
+    idx: start + i,
+    canRegen: start + i === total - 1 && m.role !== "user",
+  })).join("");
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+  hydrateImages(el);
+  renderMath(el);
+  buildMiniTicks();
+
+  const more = $("#btnMore");
+  if (more) {
+    more.onclick = () => {
+      const prevH = el.scrollHeight;
+      S.showFrom = Math.max(0, start - 40);
+      renderStream();
+      el.scrollTop = el.scrollHeight - prevH;
+    };
+  }
+}
+
+async function regenerate() {
+  if (S.busy) return;
+  while (S.msgs.length && S.msgs[S.msgs.length - 1].role !== "user") S.msgs.pop();
+  if (!S.msgs.length) return;
+  const lastUser = S.msgs[S.msgs.length - 1];
+  await saveActiveMsgs();
+  renderStream();
+  await runStream(lastUser.text, []);
+}
+
+async function pickImage() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "image/*";
+  inp.onchange = async () => {
+    const f = inp.files[0];
+    if (!f) return;
+    const dl = await new Promise((res) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result));
+      r.readAsDataURL(f);
+    });
+    S.pending.push({ dl, blob: f });
+    renderPending();
+  };
+  inp.click();
+}
+
+function renderPending() {
+  const box = $("#pending");
+  if (!box) return;
+  box.innerHTML = "";
+  S.pending.forEach((it, i) => {
+    const d = document.createElement("div");
+    d.className = "pthumb";
+    d.innerHTML = `<img src="${it.dl}" alt=""><button>×</button>`;
+    d.querySelector("button").onclick = () => { S.pending.splice(i, 1); renderPending(); };
+    box.appendChild(d);
+  });
+}
+
+function appendNode(html) {
+  const el = $("#stream");
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  const node = d.firstElementChild;
+  el.appendChild(node);
+  el.scrollTop = el.scrollHeight;
+  hydrateImages(node);
+  renderMath(node);
+  return node;
+}
+
+async function send() {
+  if (S.busy) return;
+  const ta = $("#input");
+  const text = ta.value.trim();
+  const imgs = S.pending.slice();
+  if (!text && !imgs.length) return;
+  if (!S.cfg.apiKey) { openSettings(); return alertBox("先填 API Key：设置 → 接口。"); }
+
+  ta.value = "";
+  ta.style.height = "auto";
+  S.pending = [];
+  renderPending();
+
+  const userMsg = {
+    role: "user", text, ts: Math.floor(Date.now() / 1000), reasoning: "", images: [],
+  };
+  for (const it of imgs) {
+    const id = uid();
+    await filePut({ id, name: "image", blob: it.blob });
+    userMsg.images.push(id);
+  }
+  S.msgs.push(userMsg);
+  appendNode(msgNode(userMsg));
+  await runStream(text, imgs);
+}
+
+async function runStream(text, images = []) {
+  const node = appendNode(`<div class="msg"><div class="body">
+    <details class="think live" hidden><summary>思考中…</summary><div class="tb"></div></details>
+    <div class="text"><span class="caret"></span></div>
+  </div></div>`);
+  const textEl = node.querySelector(".text");
+  const thinkEl = node.querySelector(".think");
+  const thinkBody = node.querySelector(".tb");
+
+  S.busy = true;
+  $("#btnSend").hidden = true;
+  $("#btnStop").hidden = false;
+  S.ctrl = new AbortController();
+
+  let acc = "", reasoning = "", queued = false;
+  const cites = [];
+  const paint = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      textEl.innerHTML = md(acc) + '<span class="caret"></span>';
+      renderMath(textEl);
+      const el = $("#stream");
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
+    });
+  };
+
+  try {
+    const budget = Math.max(2000, S.cfg.budget - S.cfg.maxTokens);
+    const { history } = pickHistory(S.msgs.slice(0, -1), budget);
+
+    const body = {
+      model: S.cfg.model,
+      stream: true,
+      max_tokens: S.cfg.maxTokens,
+      messages: [
+        { role: "system", content: buildSystem(S.char) },
+        ...history.map((m) => ({
+          role: m.role,
+          content: m.images && m.images.length ? m.text + "\n[此前发过图片]" : m.text,
+        })),
+        {
+          role: "user",
+          content: images.length
+            ? [{ type: "text", text: text || "（看图）" },
+               ...images.map((i) => ({ type: "image_url", image_url: { url: i.dl } }))]
+            : text,
+        },
+      ],
+    };
+    if (S.cfg.search) body.tools = [{ type: "deepseek_web_search" }];
+    if (S.cfg.thinking === "off") body.thinking = { type: "disabled" };
+    if (S.cfg.thinking === "on") body.thinking = { type: "enabled" };
+    if (S.cfg.thinking !== "on") body.temperature = Number(S.cfg.temperature) || 1.1;
+
+    const res = await fetch(S.cfg.baseUrl.replace(/\/$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + S.cfg.apiKey },
+      body: JSON.stringify(body),
+      signal: S.ctrl.signal,
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`上游 ${res.status}：${t.slice(0, 240)}`);
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+      for (const part of parts) {
+        const line = part.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
+        const anns = ev.annotations || (ev.choices || []).flatMap((ch) =>
+          ch.message?.annotations || ch.delta?.annotations || []);
+        for (const a of anns || []) {
+          const url = a?.url || a?.source?.url || a?.web_search_tool_result?.url;
+          const title = a?.title || a?.source?.title;
+          if (url && !cites.some((c) => c.url === url)) cites.push({ url, title });
+        }
+
+        for (const ch of ev.choices || []) {
+          const d = ch.delta || {};
+          if (d.reasoning_content) {
+            reasoning += d.reasoning_content;
+            thinkEl.hidden = false;
+            thinkEl.querySelector("summary").textContent = `思考中… ${reasoning.length} 字`;
+            thinkBody.textContent = reasoning.length > 1500 ? "…" + reasoning.slice(-1500) : reasoning;
+            thinkBody.scrollTop = thinkBody.scrollHeight;
+          }
+          if (d.content) {
+            if (!acc) {
+              if (!thinkEl.hidden) {
+                thinkEl.classList.remove("live");
+                thinkEl.open = false;
+                thinkEl.querySelector("summary").textContent = `思考过程（${reasoning.length} 字）`;
+              }
+            }
+            acc += d.content;
+            paint();
+          }
+        }
+      }
+    }
+
+    textEl.innerHTML = md(acc) || "（空回复）";
+    renderMath(textEl);
+    S.msgs.push({
+      role: "assistant", text: acc, ts: Math.floor(Date.now() / 1000),
+      reasoning: reasoning.slice(0, 4000), images: [], cites,
+    });
+    await saveActiveMsgs();
+  } catch (e) {
+    const abort = e.name === "AbortError";
+    if (abort && acc.trim()) {
+      textEl.innerHTML = md(acc);
+      renderMath(textEl);
+      S.msgs.push({
+        role: "assistant", text: acc, ts: Math.floor(Date.now() / 1000),
+        reasoning: reasoning.slice(0, 4000), images: [], cites,
+      });
+      await saveActiveMsgs();
+    } else {
+      node.querySelector(".body").insertAdjacentHTML("beforeend",
+        `<div class="notice bad" style="margin-top:8px">${esc(abort ? "已停止" : "出错了：" + (e.message || e))}</div>`);
+      textEl.innerHTML = "";
+    }
+  } finally {
+    S.busy = false;
+    S.ctrl = null;
+    $("#btnSend").hidden = false;
+    $("#btnStop").hidden = true;
+    $("#csub").textContent = `${S.msgs.length} 条 · ${S.char.persona ? "已设人设" : "还没设人设"}`;
+    buildMiniTicks();
+  }
+}
+
+/* ---------------------------------------------------------------- 设置 */
+
+
+/* ---------------------------------------------------------------- 备份 / 迁移 */
+
+function blobToB64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1] || "");
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+function b64ToBlob(b64, type) {
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return new Blob([buf], { type: type || "application/octet-stream" });
+}
+
+
+
+function download(filename, text, type) {
+  const blob = new Blob([text], { type: type || "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+
+const safeName = (n) => (n || "角色").replace(/[^\w\u4e00-\u9fa5-]/g, "_").slice(0, 24);
+
+function exportCard() {
+  const c = S.char;
+  const firstAsst = (S.msgs.find((m) => m.role === "assistant") || {}).text || "";
+  const card = {
+    spec: "chara_card_v2",
+    spec_version: "2.0",
+    data: {
+      name: c.name || "未命名",
+      description: c.persona || "",
+      personality: "",
+      scenario: "",
+      first_mes: firstAsst,
+      mes_example: "",
+      creator_notes: c.anchors || "",
+      system_prompt: c.persona || "",
+      post_history_instructions: "",
+      tags: ["rehydrate"],
+      creator: "rehydrate",
+      character_version: "1.0",
+      extensions: {},
+    },
+  };
+  download(safeName(c.name) + ".card.json", JSON.stringify(card, null, 2));
+}
+
+function exportJsonl() {
+  const c = S.char;
+  const head = {
+    user_name: "我", character_name: c.name || "", create_date: new Date().toISOString(),
+    talkativeness: "0.5", mes: "", fav: false, tags: [], title: c.name || "",
+    description: c.persona || "", personality: "", scenario: "",
+    first_mes: (S.msgs.find((m) => m.role === "assistant") || {}).text || "",
+    mes_example: "", creator_notes: c.anchors || "", system_prompt: c.persona || "",
+    post_history_instructions: "", alternate_greetings: [], character_book: null,
+    extensions: {}, character_version: "", creator: "rehydrate", chat_metadata: {},
+  };
+  const lines = [JSON.stringify(head)];
+  for (const m of S.msgs) {
+    lines.push(JSON.stringify({
+      name: m.role === "user" ? "我" : (c.name || "她"),
+      is_user: m.role === "user", is_system: false,
+      send_date: m.ts ? new Date(m.ts * 1000).toISOString() : "",
+      mes: m.text, extra: {},
+    }));
+  }
+  download(safeName(c.name) + ".jsonl", lines.join("\n"), "application/jsonl");
+}
+
+async function distillAnchors() {
+  const btn = $("#btnDistill");
+  const key = $("#fKey").value.trim() || S.cfg.apiKey;
+  const base = ($("#fBase").value.trim() || S.cfg.baseUrl).replace(/\/$/, "");
+  const model = $("#fModel").value === "__custom" ? $("#fModelCustom").value.trim() : $("#fModel").value;
+  if (!key) return alertBox("先填 API Key");
+  if (S.msgs.length < 4) return alertBox("对话太短，攒几轮再提炼");
+
+  btn.disabled = true;
+  btn.textContent = "提炼中…";
+  try {
+    const who = S.char.name || "她";
+    const convo = S.msgs.slice(-60).map((m) =>
+      (m.role === "user" ? "我：" : who + "：") + (m.text || "").slice(0, 500)).join("\n");
+    const prompt = `这是「${who}」与对方最近的一段对话。请提炼出为了以后接着聊、必须记住的长期事实。\n\n` +
+      "要求：\n- 每条一行，以「- 」开头，最多 12 条\n" +
+      "- 只写事实：身份、称呼、约定、共同经历、明确的好恶与禁忌、说到一半没讲完的事\n" +
+      "- 不写情绪形容，不写「关系很好」这类空话，不复述剧情细节\n" +
+      "- 已有的锚点不要重复\n\n" +
+      `已有锚点：\n${$("#fAnchors").value || "（无）"}\n\n对话：\n${convo}`;
+
+    const body = {
+      model, stream: false, max_tokens: 900,
+      messages: [
+        { role: "system", content: "你在帮一段长期角色扮演做记忆压缩。只输出条目，不解释、不寒暄。" },
+        { role: "user", content: prompt },
+      ],
+    };
+    if ($("#fThink").value === "off") body.thinking = { type: "disabled" };
+
+    const res = await fetch(base + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error("上游 " + res.status + " " + (await res.text()).slice(0, 160));
+    const data = await res.json();
+    const text = ((data.choices || [])[0]?.message?.content || "").trim();
+    if (!text) throw new Error("模型没有返回内容");
+    const ta = $("#fAnchors");
+    ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + text;
+  } catch (e) {
+    alertBox("提炼失败：" + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "从最近 60 条提炼锚点";
+  }
+}
+
+function fillModelSelect(models, current) {
+  const sel = $("#fModel");
+  if (!sel) return;
+  const ids = (models || []).map((m) => m.id).filter(Boolean);
+  if (current && !ids.includes(current)) ids.unshift(current);
+  sel.innerHTML = "";
+  ids.forEach((id) => {
+    const o = document.createElement("option");
+    o.value = id; o.textContent = id;
+    sel.appendChild(o);
+  });
+  const c = document.createElement("option");
+  c.value = "__custom"; c.textContent = "＋ 手动输入";
+  sel.appendChild(c);
+  sel.value = current && ids.includes(current) ? current : (ids[0] || "__custom");
+  const box = $("#fModelCustom");
+  if (box) box.hidden = sel.value !== "__custom";
+  sel.onchange = () => {
+    const b = $("#fModelCustom");
+    if (!b) return;
+    b.hidden = sel.value !== "__custom";
+    if (!b.hidden) b.focus();
+  };
+}
+
+function bindModelPicker(cfg) {
+  fillModelSelect([], cfg.model);
+  const btn = $("#btnModels");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const key = $("#fKey").value.trim() || cfg.apiKey;
+    const base = ($("#fBase").value.trim() || cfg.baseUrl).replace(/\/$/, "");
+    const hint = $("#modelHint");
+    if (!key) { hint.textContent = "先填 API Key"; return; }
+    btn.disabled = true; btn.textContent = "读取中";
+    try {
+      const res = await fetch(base + "/models", { headers: { Authorization: "Bearer " + key } });
+      if (!res.ok) throw new Error("上游 " + res.status);
+      const data = await res.json();
+      const raw = data.data || data.models || [];
+      const list = raw.map((m) => (typeof m === "string" ? { id: m } : { id: m.id || m.name })).filter((m) => m.id);
+      const cur = $("#fModel").value === "__custom" ? $("#fModelCustom").value.trim() : $("#fModel").value;
+      fillModelSelect(list, cur || cfg.model);
+      hint.textContent = list.length ? `读到 ${list.length} 个模型，点下拉选` : "接口通了但没返回模型，手动填吧";
+    } catch (e) {
+      hint.textContent = "拉不到清单（" + (e.message || e) + "），手动填模型名也行";
+    } finally {
+      btn.disabled = false; btn.textContent = "读清单";
+    }
+  };
+}
+
+async function exportZip() {
+  const btn = $("#zipBtn");
+  btn.disabled = true;
+  btn.textContent = "打包中…";
+  try {
+    const enc = new TextEncoder();
+    const files = [];
+    const manifest = {
+      app: "rehydrate-mobile", v: 3, kind: "full-export",
+      exportedAt: new Date().toISOString(),
+      cfg: {
+        baseUrl: S.cfg.baseUrl, model: S.cfg.model, thinking: S.cfg.thinking,
+        budget: S.cfg.budget, maxTokens: S.cfg.maxTokens,
+        temperature: S.cfg.temperature, search: !!S.cfg.search, font: S.cfg.font || 15,
+      },
+      chats: [],
+    };
+
+    let bytes = 0;
+    const CAP = 200 * 1024 * 1024;
+
+    for (const c of S.chats) {
+      const msgs = c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id))) || []);
+      const out = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors, msgs: [] };
+
+      for (const m of msgs) {
+        const imgs = [];
+        for (const fid of m.images || []) {
+          if (bytes > CAP) continue;
+          const rec = await fileGet(fid).catch(() => null);
+          if (!rec) continue;
+          const raw = new Uint8Array(await rec.blob.arrayBuffer());
+          const safe = (rec.name || "image").replace(/[^\w.\-\u4e00-\u9fa5]/g, "_").slice(0, 60);
+          const fname = fid + "_" + safe;
+          files.push({ name: `chat_sessions/${c.id}_files/${fname}`, bytes: raw });
+          bytes += raw.length;
+          imgs.push(fname);
+        }
+        out.msgs.push({
+          role: m.role, text: m.text, ts: m.ts || 0,
+          reasoning: m.reasoning || "", images: imgs,
+        });
+      }
+      manifest.chats.push(out);
+    }
+
+    files.unshift({
+      name: "rehydrate-manifest.json",
+      bytes: enc.encode(JSON.stringify(manifest, null, 2)),
+    });
+
+    const blob = makeZip(files);
+    const name = `${safeName(S.char?.name)}-全部数据-${new Date().toISOString().slice(0, 10)}.zip`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+
+    alertBox(`已打包 ${manifest.chats.length} 段对话、${files.length - 1} 张图片（${(bytes / 1048576).toFixed(1)} MB）。这个 zip 可以再导入回来。`);
+  } catch (e) {
+    alertBox("打包失败：" + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "导出全部数据（ZIP，可再导入）";
+  }
+}
+
+async function importOwnZip(zip, maniEntry) {
+  const mani = JSON.parse(new TextDecoder().decode(await zip.read(maniEntry)));
+  const chats = mani.chats || [];
+  const total = chats.reduce((n, c) => n + (c.msgs || []).length, 0);
+  if (!confirm(`这是角色接续台的备份包：${chats.length} 段对话、${total} 条消息。\n\n导入会覆盖手机上现有数据，继续吗？`)) return;
+
+  const keepKey = S.cfg.apiKey;
+  await wipe();
+
+  const list = [];
+  for (const c of chats) {
+    const id = uid();
+    const msgs = [];
+    for (const m of c.msgs || []) {
+      const ids = [];
+      for (const fname of m.images || []) {
+        const e = zip.entries.find((x) => x.name.endsWith("/" + fname));
+        if (!e) continue;
+        const raw = await zip.read(e);
+        const fid = uid();
+        const ext = (fname.split(".").pop() || "").toLowerCase();
+        const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
+        await filePut({ id: fid, name: fname, blob: new Blob([raw], { type: mime }) });
+        ids.push(fid);
+      }
+      msgs.push({
+        role: m.role, text: m.text, ts: m.ts || 0,
+        reasoning: m.reasoning || "", images: ids,
+      });
+    }
+    list.push({
+      id, name: c.name || "未命名", persona: c.persona || "", anchors: c.anchors || "",
+      ts: Date.now(), count: msgs.length,
+      last: (msgs[msgs.length - 1] || {}).text || "",
+    });
+    await kvSet(msgsKey(id), msgs);
+  }
+
+  await kvSet(CHATS_KEY, list);
+  await kvSet(ACTIVE_KEY, list[0] ? list[0].id : "");
+  await kvSet("cfg", { ...DEFAULT_CFG, ...(mani.cfg || {}), apiKey: keepKey });
+  S.chats = list;
+  alertBox(`导入完成：${list.length} 段对话、${total} 条消息。点确定后重新载入。`);
+  location.reload();
+}
+
+async function exportData() {
+  const withFiles = confirm(
+    "要把图片一起打包吗？\n\n" +
+    "确定 = 连图片一起（文件大，最多 20MB）\n" +
+    "取消 = 只带文字和人设（几十 KB，换手机够用）"
+  );
+
+  // 收集所有对话（当前这条在内存里，其余从库里读）
+  const chats = [];
+  for (const c of S.chats) {
+    chats.push({
+      name: c.name, persona: c.persona, anchors: c.anchors,
+      msgs: c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id))) || []),
+    });
+  }
+  if (!chats.length) chats.push({ name: S.char?.name || "角色", persona: S.char?.persona || "", anchors: S.char?.anchors || "", msgs: S.msgs });
+
+  const pack = packAll(chats, S.cfg);
+  const all = chats.flatMap((c) => c.msgs);
+
+  if (withFiles) {
+    let bytes = 0, n = 0;
+    for (const m of all) {
+      for (const id of m.images || []) {
+        if (bytes > 20 * 1024 * 1024) break;
+        if (pack.files[id]) continue;
+        const rec = await fileGet(id).catch(() => null);
+        if (!rec) continue;
+        pack.files[id] = { name: rec.name || id, data: await blobToB64(rec.blob) };
+        bytes += rec.blob.size;
+        n++;
+      }
+    }
+    pack.withFiles = n;
+  }
+
+  const safe = safeName(S.char?.name);
+  const stamp = new Date().toISOString().slice(0, 10);
+  download(`${safe}-${stamp}.json`, JSON.stringify(pack));
+  alertBox(`已导出 ${chats.length} 段对话、共 ${all.length} 条${withFiles ? "，含图片" : "，不含图片"}。API Key 不在文件里，换手机后要重填。`);
+}
+
+async function importData() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".json,application/json";
+  inp.onchange = async () => {
+    const f = inp.files[0];
+    if (!f) return;
+    try {
+      const data = unpack(JSON.parse(await f.text()));
+      const total = data.chats.reduce((n, c) => n + c.msgs.length, 0);
+      if (!confirm(`导入 ${data.chats.length} 段对话（共 ${total} 条）？会覆盖这台手机上现有的全部数据。`)) return;
+
+      const keepKey = S.cfg.apiKey;
+      await wipe();
+
+      const list = [];
+      for (const c of data.chats) {
+        const id = uid();
+        list.push({
+          id, name: c.name, persona: c.persona, anchors: c.anchors,
+          ts: Date.now(), count: c.msgs.length,
+          last: (c.msgs[c.msgs.length - 1] || {}).text || "",
+        });
+        await kvSet(msgsKey(id), c.msgs);
+      }
+      await kvSet(CHATS_KEY, list);
+      await kvSet(ACTIVE_KEY, list[0] ? list[0].id : "");
+      await kvSet("cfg", { ...DEFAULT_CFG, ...data.cfg, apiKey: keepKey });
+
+      const files = Object.entries(data.files || {});
+      for (const [id, rec] of files) {
+        await filePut({ id, name: rec.name || id, blob: b64ToBlob(rec.data) });
+      }
+      alertBox(`导入完成：${list.length} 段对话、${total} 条消息${files.length ? "，" + files.length + " 张图片" : ""}。点确定后重新载入。`);
+      location.reload();
+    } catch (e) {
+      alertBox("导入失败：" + (e.message || e));
+    }
+  };
+  inp.click();
+}
+
+
+async function hardReload() {
+  const btn = $("#hardReload");
+  btn.disabled = true;
+  btn.textContent = "更新中…";
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) {
+        try { await r.update(); } catch {}
+        await r.unregister();
+      }
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {}
+  location.reload();
+}
+
+
+function scrollToMsg(idx) {
+  const el = $("#stream");
+  if (!el) return;
+  if (idx < (S.showFrom || 0)) S.showFrom = Math.max(0, idx - 5);
+  renderStream();
+  requestAnimationFrame(() => {
+    const node = el.querySelector(`[data-idx="${idx}"]`);
+    if (!node) return;
+    node.scrollIntoView({ block: "center" });
+    node.classList.add("flash");
+    setTimeout(() => node.classList.remove("flash"), 1400);
+  });
+}
+
+function fullTime(ts) {
+  if (!ts) return "刚刚";
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function openTimeline() {
+  const existing = document.querySelector(".timeline-drawer");
+  if (existing) {
+    existing.querySelector("#tlClose")?.click();
+    return;
+  }
+  const sheet = document.createElement("div");
+  sheet.className = "sheet timeline-drawer";
+  const scrim = document.createElement("div");
+  scrim.className = "timeline-scrim";
+  document.body.appendChild(scrim);
+
+  sheet.innerHTML = `
+    <div class="shead">
+      <span>时间线</span>
+      <button class="icon" id="tlClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="tl-tabs">
+      <button class="on" data-view="msg">消息</button>
+      <button data-view="img">图片</button>
+    </div>
+    <div class="sbody" id="tlBody"></div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => { sheet.classList.add("on"); scrim.classList.add("on"); });
+
+  const close = () => {
+    sheet.classList.remove("on");
+    scrim.classList.remove("on");
+    setTimeout(() => { sheet.remove(); scrim.remove(); }, 240);
+  };
+  $("#tlClose").onclick = close;
+
+  const renderMsgs = () => {
+    const body = $("#tlBody");
+    body.innerHTML = "";
+    if (!S.msgs.length) {
+      body.innerHTML = `<div class="hint">还没有消息</div>`;
+      return;
+    }
+    let lastDay = "";
+    S.msgs.forEach((m, i) => {
+      if (!m.ts) return;
+      const d = new Date(m.ts * 1000);
+      const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      if (day !== lastDay) {
+        const h = document.createElement("div");
+        h.className = "tl-day";
+        h.textContent = day;
+        body.appendChild(h);
+        lastDay = day;
+      }
+      const row = document.createElement("button");
+      row.className = "tl-item";
+      row.innerHTML = `<div class="tl-top"><b></b><time></time></div>
+        <div class="tl-text"></div>`;
+      row.querySelector("b").textContent = m.role === "user" ? "我" : (S.char.name || "她");
+      row.querySelector("time").textContent = fullTime(m.ts);
+      row.querySelector(".tl-text").textContent =
+        (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "（图片）";
+      row.onclick = () => scrollToMsg(i);
+      body.appendChild(row);
+    });
+  };
+
+  const renderImgs = async () => {
+    const body = $("#tlBody");
+    body.innerHTML = "";
+    const items = [];
+    S.msgs.forEach((m, i) => (m.images || []).forEach((id) => items.push({ id, i, role: m.role, ts: m.ts })));
+    if (!items.length) {
+      body.innerHTML = `<div class="hint">还没有图片</div>`;
+      return;
+    }
+    for (const it of items) {
+      const row = document.createElement("button");
+      row.className = "tl-img";
+      row.innerHTML = `<img data-f="${it.id}" alt=""><div><b></b><time></time></div>`;
+      row.querySelector("b").textContent = "来自 " + (it.role === "user" ? "我" : (S.char.name || "她"));
+      row.querySelector("time").textContent = fullTime(it.ts);
+      row.onclick = () => scrollToMsg(it.i);
+      body.appendChild(row);
+    }
+    hydrateImages(body);
+  };
+
+  sheet.querySelectorAll(".tl-tabs button").forEach((b) => {
+    b.onclick = () => {
+      sheet.querySelectorAll(".tl-tabs button").forEach((x) => x.classList.toggle("on", x === b));
+      if (b.dataset.view === "img") renderImgs(); else renderMsgs();
+    };
+  });
+  renderMsgs();
+}
+
+function openSettings() {
+  const existing = document.querySelector(".sheet.settings-sheet");
+  if (existing) {
+    existing.querySelector("#x")?.click();
+    return;
+  }
+  const c = S.char, cfg = S.cfg;
+  const sheet = document.createElement("div");
+  sheet.className = "sheet settings-sheet";
+  sheet.innerHTML = `
+    <div class="shead"><span>设置</span><button class="icon" id="x">✕</button></div>
+    <div class="sbody">
+      <div class="field"><label>角色名</label><input id="fName" value="${esc(c.name || "")}"></div>
+      <div class="field">
+        <label>人设 / 系统提示</label>
+        <textarea id="fPersona" placeholder="她是谁、怎么说话、和你是什么关系…">${esc(c.persona || "")}</textarea>
+        <div class="hint">把你当初那段开场原样贴进来最好。没有的话写清：身份、说话习惯、对你的称呼、现在的关系进度。</div>
+      </div>
+      <div class="field">
+        <label>记忆锚点</label>
+        <textarea id="fAnchors" placeholder="一、我们在 3 月认识，她叫我「阿岩」&#10;二、她讨厌被问「你是 AI 吗」&#10;三、上次聊到一半，约定下次讲完那个故事">${esc(c.anchors || "")}</textarea>
+        <div class="hint">历史会被 token 预算切掉，切掉的部分只能靠这里记住。一行一条，只写事实。</div>
+        <button class="btn ghost" id="btnDistill" style="margin-top:10px">从最近 60 条提炼锚点</button>
+      </div>
+      <div class="divider"></div>
+      <div class="field"><label>API Key</label><input id="fKey" type="password" placeholder="${cfg.apiKey ? "已保存 " + cfg.apiKey.slice(-4) : "sk-..."}">
+        <div class="hint">只存在这台手机。用低额度的 Key 更稳妥。</div>
+      </div>
+      <div class="field"><label>Base URL</label><input id="fBase" value="${esc(cfg.baseUrl)}">
+        <div class="hint">官方填 https://api.deepseek.com；校园网关填到 /v1 为止。</div>
+      </div>
+      <div class="field">
+        <label>模型</label>
+        <div class="mrow">
+          <select id="fModel"></select>
+          <button class="mini" id="btnModels" type="button">读清单</button>
+        </div>
+        <input id="fModelCustom" placeholder="手填模型名" hidden>
+        <div class="hint" id="modelHint">点「读清单」用你的 Key 拉一次 /models，能用的都会列进下拉。</div>
+      </div>
+      <div class="field"><label>思考模式</label>
+        <select id="fThink">
+          <option value="off">关闭 — 快，温度才生效</option>
+          <option value="on">开启 — 先想再答，慢且贵</option>
+          <option value="auto">跟随模型默认</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>温度 temperature</label>
+        <input id="fTemp" type="number" step="0.1" min="0" max="2" value="${cfg.temperature ?? 1.1}">
+        <div class="hint">说话有多放得开。0.7 稳但容易车轱辘话，1.0–1.2 适合角色扮演，1.5 以上开始散。思考模式开着时这项不生效。</div>
+      </div>
+      <div class="field">
+        <label>单条回复上限 max_tokens</label>
+        <input id="fMax" type="number" step="1000" min="1" max="393216" value="${cfg.maxTokens ?? 8192}">
+        <div class="hint">只决定这一条最多写多长，不影响记忆。</div>
+      </div>
+      <div class="field">
+        <label>正文字号</label>
+        <input id="fFont" type="number" min="12" max="20" step="1" value="${cfg.font || 15}">
+        <div class="hint">只改聊天气里的字，不影响按钮。</div>
+      </div>
+      <div class="field">
+        <label>上下文预算（输入 + 输出合计）</label>
+        <input id="fBudget" type="number" step="10000" min="2000" max="1048576" value="${cfg.budget ?? 128000}">
+        <div class="hint">每轮带多少历史，上限 1048576。装得越满越慢越贵，常见 6–20 万。</div>
+      </div>
+      <button class="btn" id="save">保存</button>
+      <div class="divider"></div>
+      <button class="btn ghost" id="expBtn" style="margin-bottom:8px">导出数据（备份 / 换手机）</button>
+      <button class="btn ghost" id="zipBtn" style="margin-bottom:8px">导出全部数据（ZIP，可再导入）</button>
+      <button class="btn ghost" id="cardBtn" style="margin-bottom:8px">导出角色卡 JSON（酒馆用）</button>
+      <button class="btn ghost" id="jsonlBtn" style="margin-bottom:8px">导出对话 JSONL</button>
+      <button class="btn ghost" id="impBtn" style="margin-bottom:8px">从备份导入</button>
+      <button class="btn ghost" id="hardReload" style="margin-bottom:8px">检查更新（清缓存重载）</button>
+      <button class="btn danger" id="reset">清除数据，重新导入</button>
+      <div class="hint" style="text-align:center">手机本地版 · 数据不经过任何服务器</div>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.classList.add("on"));
+  $("#fThink").value = cfg.thinking || "off";
+  $("#x").onclick = () => { sheet.classList.remove("on"); setTimeout(() => sheet.remove(), 240); };
+
+  $("#save").onclick = async () => {
+    S.char = {
+      ...c,
+      name: $("#fName").value.trim() || c.name,
+      persona: $("#fPersona").value,
+      anchors: $("#fAnchors").value,
+    };
+    const key = $("#fKey").value.trim();
+    S.cfg = {
+      ...cfg,
+      apiKey: key || cfg.apiKey,
+      baseUrl: $("#fBase").value.trim() || cfg.baseUrl,
+      model: $("#fModel").value === "__custom"
+        ? ($("#fModelCustom").value.trim() || cfg.model)
+        : ($("#fModel").value || cfg.model),
+      thinking: $("#fThink").value,
+      temperature: Number($("#fTemp").value) || 1.1,
+      maxTokens: Math.round(Number($("#fMax").value) || 8192),
+      budget: Math.round(Number($("#fBudget").value) || 128000),
+      font: Math.min(20, Math.max(12, Math.round(Number($("#fFont").value) || 15))),
+    };
+    await saveActiveMsgs();
+    await kvSet("cfg", S.cfg);
+    applyFont();
+    syncPills();
+    $("#cname").textContent = S.char.name;
+    $("#csub").textContent = `${S.msgs.length} 条 · ${S.char.persona ? "已设人设" : "还没设人设"}`;
+    $("#x").click();
+  };
+
+  bindModelPicker(cfg);
+  $("#btnDistill").onclick = distillAnchors;
+  $("#zipBtn").onclick = exportZip;
+  $("#cardBtn").onclick = exportCard;
+  $("#jsonlBtn").onclick = exportJsonl;
+
+  $("#expBtn").onclick = exportData;
+  $("#impBtn").onclick = importData;
+
+  $("#hardReload").onclick = hardReload;
+
+  $("#reset").onclick = async () => {
+    if (!confirm("清除手机上的全部对话和设置？这个操作不可恢复。")) return;
+    await wipe();
+    location.reload();
+  };
+}
+
+
+/* ---------------------------------------------------------------- 离线 */
+
+const secure = location.protocol === "https:" ||
+  ["localhost", "127.0.0.1"].includes(location.hostname);
+
+if ("serviceWorker" in navigator && secure) {
+  navigator.serviceWorker.register("./sw.js").then(
+    () => console.log("SW-OK"),
+    (e) => console.log("SW-FAIL " + e.message)
+  );
+}
+
+boot().catch((e) => {
+  app.innerHTML = `<div class="intro"><div class="notice bad">启动失败：${esc(e.message || e)}</div></div>`;
+});

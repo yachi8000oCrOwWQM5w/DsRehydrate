@@ -1,0 +1,19 @@
+# 本地数据与隐私
+data/
+*.zip
+deepseek_data-*/
+*.log
+*.pyc
+__pycache__/
+.venv/
+
+# 卡密与本地配置
+cdk-*.txt
+.env
+.env.*
+
+# 工具产物
+.workbuddy/
+.wbapp_*.genie
+.DS_Store
+node_modules/

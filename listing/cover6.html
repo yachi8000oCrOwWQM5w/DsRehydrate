@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1080px;height:1080px;overflow:hidden;color:#0b1b33;
+  font-family:"Microsoft YaHei","PingFang SC",-apple-system,sans-serif;-webkit-font-smoothing:antialiased;
+  background:linear-gradient(165deg,#e8f2fe 0%,#f2f8ff 46%,#fbfdff 100%);position:relative}
+.circuit{position:absolute;inset:0;opacity:.5;background-image:
+  radial-gradient(circle at 12% 24%,#cfe3fa 0 3px,transparent 3px),
+  radial-gradient(circle at 88% 18%,#cfe3fa 0 3px,transparent 3px),
+  radial-gradient(circle at 92% 62%,#dbe9fb 0 4px,transparent 4px);
+  background-size:220px 220px,180px 180px,260px 260px}
+.badge{position:absolute;top:52px;left:50%;transform:translateX(-50%);
+  background:#fff;border:1.5px solid #cbdcf5;border-radius:999px;padding:10px 26px 10px 16px;
+  display:flex;align-items:center;gap:12px;box-shadow:0 6px 18px rgba(47,107,208,.10)}
+.mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(160deg,#4d8ef0,#2f6bd0);
+  display:flex;align-items:center;justify-content:center}
+.mark i{width:12px;height:16px;border:2.5px solid #fff;border-radius:2px;display:block;border-bottom-width:5px}
+.bt{font-size:24px;color:#2f6bd0;letter-spacing:.02em}
+h1{position:absolute;top:126px;left:0;width:100%;text-align:center;font-size:70px;
+  font-weight:800;letter-spacing:-.02em;line-height:1.1}
+.sub{position:absolute;top:214px;left:0;width:100%;text-align:center;font-size:29px;color:#4a6b96;letter-spacing:.01em}
+
+.stage{position:absolute;left:0;top:272px;width:1080px;height:410px}
+.phone{position:absolute;left:150px;top:36px;width:166px;height:306px;background:#fff;
+  border:3px solid #c9dcf6;border-radius:28px;box-shadow:0 18px 40px rgba(47,107,208,.14);transform:rotate(-4deg)}
+.notch{position:absolute;left:50%;top:12px;transform:translateX(-50%);width:54px;height:8px;border-radius:99px;background:#dbe7f8}
+.pb{position:absolute;border-radius:10px}
+.pb.a{left:20px;top:52px;width:88px;height:34px;background:#e8effa}
+.pb.b{left:20px;top:96px;width:118px;height:34px;background:#eef3fb}
+.pb.c{left:20px;top:140px;width:72px;height:34px;background:#eef3fb}
+.pdead{position:absolute;left:12px;bottom:58px;width:140px;height:34px;border-radius:9px;
+  background:#eef0f3;border:1.5px dashed #c3ccd8;color:#98a3b2;font-size:13px;
+  display:flex;align-items:center;justify-content:center}
+.px{position:absolute;right:14px;bottom:16px;width:34px;height:34px;border-radius:50%;
+  background:#e6eaf0;color:#8d99a9;font-size:20px;display:flex;align-items:center;justify-content:center}
+
+.laptop{position:absolute;left:452px;top:20px;width:470px;height:330px}
+.screen{position:absolute;left:34px;top:0;width:402px;height:266px;background:#fff;
+  border:3px solid #c9dcf6;border-radius:14px;box-shadow:0 18px 40px rgba(47,107,208,.14);padding:18px 20px}
+.bar{width:60px;height:8px;border-radius:99px;background:#dbe7f8;margin-bottom:16px}
+.lm{border-radius:9px;margin-bottom:11px}
+.lm.u{margin-left:auto;width:150px;height:26px;background:#e3edfc}
+.lm.a{width:250px;height:26px;background:#f1f5fb}
+.lm.a2{width:196px;height:26px;background:#f1f5fb}
+.check{position:absolute;right:-20px;top:-20px;width:58px;height:58px;border-radius:50%;
+  background:linear-gradient(160deg,#43c08a,#22a06b);color:#fff;font-size:30px;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 10px 22px rgba(34,160,107,.32)}
+.base{position:absolute;left:0;bottom:36px;width:470px;height:22px;border-radius:6px 6px 14px 14px;
+  background:#dce8f8;box-shadow:0 10px 22px rgba(47,107,208,.16)}
+.base::after{content:"";position:absolute;left:50%;top:0;transform:translateX(-50%);
+  width:96px;height:8px;border-radius:0 0 8px 8px;background:#c9dbf3}
+
+.chips{position:absolute;left:512px;top:296px;display:flex;gap:12px}
+.chip{background:#fff;border:1.5px solid #d6e4f8;border-radius:10px;padding:9px 14px;font-size:19px;
+  color:#39628f;box-shadow:0 8px 18px rgba(47,107,208,.10);display:flex;align-items:center;gap:8px}
+.chip b{width:10px;height:12px;border-radius:2px;display:block}
+.pdf b{background:#e06a5f}.txt b{background:#3aa981}.json b{background:#e0a03f}
+
+.flowarrow{position:absolute;left:330px;top:186px}
+
+.grid{position:absolute;left:60px;top:688px;width:960px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.card{background:#fff;border:1.5px solid #e2ecfb;border-radius:16px;padding:22px;min-height:130px;
+  display:flex;align-items:center;gap:18px;box-shadow:0 10px 26px rgba(47,107,208,.08)}
+.ic{width:62px;height:62px;flex:none;border-radius:14px;background:#eaf2fd;display:flex;
+  align-items:center;justify-content:center}
+.ct{font-size:29px;font-weight:700;letter-spacing:-.01em}
+.ce{font-size:18px;color:#8095b3;margin-top:4px;letter-spacing:.01em}
+.cap{position:absolute;top:352px;font-size:20px;letter-spacing:.02em;text-align:center}
+.cap.old{left:150px;width:166px;color:#93a1b3}
+.cap.new{left:452px;width:470px;color:#2f6bd0;font-weight:700}
+.foot{position:absolute;left:0;top:996px;width:100%;text-align:center;font-size:24px;color:#5f7ea3;letter-spacing:.04em}
+.foot b{color:#2f6bd0;font-weight:700}
+</style></head><body>
+<div class="circuit"></div>
+
+<div class="badge"><span class="mark"><i></i></span><span class="bt">deepseek · 对话迁移</span></div>
+<h1>DeepSeek 聊天记录迁移</h1>
+<div class="sub">旧的聊不下去，搬到新窗口接着聊</div>
+
+<div class="stage">
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="pb a"></div><div class="pb b"></div><div class="pb c"></div>
+    <div class="pdead">已无法继续</div>
+    <div class="px">×</div>
+  </div>
+
+  <svg class="flowarrow" width="120" height="60" viewBox="0 0 120 60">
+    <path d="M4 30 H84" stroke="#8fb6ea" stroke-width="3" stroke-dasharray="9 8" fill="none" stroke-linecap="round"/>
+    <path d="M84 18 L106 30 L84 42" stroke="#8fb6ea" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
+  <div class="laptop">
+    <div class="screen">
+      <div class="bar"></div>
+      <div class="lm u"></div>
+      <div class="lm a"></div>
+      <div class="lm a2"></div>
+      <div class="check">✓</div>
+    </div>
+    <div class="base"></div>
+  </div>
+
+  <div class="cap old">旧窗口 · 发不出去</div>
+  <div class="cap new">新窗口 · 接着聊</div>
+
+  <div class="chips">
+    <div class="chip pdf"><b></b>PDF</div>
+    <div class="chip txt"><b></b>TXT</div>
+    <div class="chip json"><b></b>JSON</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2f6bd0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8.2V19l-4 2v-8.8z"/></svg></div>
+    <div><div class="ct">按会话挑选</div><div class="ce">Filter by Conversation</div></div>
+  </div>
+  <div class="card">
+    <div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2f6bd0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="12" r="2.4"/><path d="M6 7.4v9.2M8.4 19h3.2a3.4 3.4 0 0 0 3.4-3.4v-1.2"/></svg></div>
+    <div><div class="ct">只留主线</div><div class="ce">Keep the Real Branch</div></div>
+  </div>
+  <div class="card">
+    <div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2f6bd0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="14" height="14" rx="2.5"/><path d="M3 8v11a2 2 0 0 0 2 2h11"/></svg></div>
+    <div><div class="ct">附件原图</div><div class="ce">Original Attachments</div></div>
+  </div>
+  <div class="card">
+    <div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2f6bd0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v6.2c0 4.3-3.1 7.4-7.5 8.8-4.4-1.4-7.5-4.5-7.5-8.8V6z"/><path d="M9 12.2l2.2 2.2 4-4.4"/></svg></div>
+    <div><div class="ct">本地运行</div><div class="ce">Runs on Your PC</div></div>
+  </div>
+</div>
+<div class="foot"><b>本地处理</b> · 不碰你的账号 · 当天交付</div>
+</body></html>

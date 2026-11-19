@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1080px;height:1080px;background:#f5f4f1;color:#1e1d1b;overflow:hidden;
+  font-family:"Microsoft YaHei","PingFang SC",-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{padding:74px 72px 62px;height:100%;display:flex;flex-direction:column}
+.head{font-size:62px;font-weight:700;letter-spacing:-.02em}
+.head span{color:#a9a49b;font-weight:400}
+.cols{display:flex;align-items:stretch;gap:14px;margin-top:44px}
+.col{width:432px;min-height:486px;border-radius:22px;padding:26px 26px 22px;display:flex;flex-direction:column}
+.col.bad{background:#eeeae3;border:1px solid #ddd8ce}
+.col.good{background:#e9f1ed;border:1px solid #cfe0d8}
+.ct{font-size:32px;font-weight:700;margin-bottom:22px}
+.col.bad .ct{color:#7b7770}
+.col.good .ct{color:#2e6b5a}
+.chat{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:14px}
+.u{align-self:flex-end;background:#d9d3c8;color:#3c3a36;border-radius:14px 14px 4px 14px;
+  padding:13px 17px;font-size:23px;max-width:86%}
+.a{align-self:flex-start;background:#fff;color:#3c3a36;border-radius:14px 14px 14px 4px;
+  padding:13px 17px;font-size:23px;max-width:88%;border:1px solid #e6e2da}
+.col.bad .a{color:#a9a49b}
+.inp{margin-top:18px;border-radius:12px;padding:15px 16px;font-size:21px;display:flex;
+  align-items:center;justify-content:space-between;gap:10px}
+.col.bad .inp{background:#e2dcd2;color:#8f8a80}
+.col.good .inp{background:#fff;border:1px solid #cfe0d8;color:#b4b2a9}
+.send{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.col.bad .send{background:#cfc8bc;color:#fff}
+.col.good .send{background:#2e6b5a;color:#fff}
+.arrow{width:56px;display:flex;align-items:center;justify-content:center;font-size:40px;color:#b4b2a9}
+.mid{font-size:30px;color:#7b7770;margin-top:36px;letter-spacing:.01em}
+.grow{flex:1}
+.foot{font-size:26px;color:#3c3a36;border-top:1px solid #e4e0d9;padding-top:24px;line-height:1.6}
+.foot b{color:#2e6b5a;font-weight:600}
+</style></head><body>
+<div class="wrap">
+  <div class="head">同一个角色，<span>只是换了个窗口</span></div>
+  <div class="cols">
+    <div class="col bad">
+      <div class="ct">旧窗口</div>
+      <div class="chat">
+        <div class="u">在吗</div>
+        <div class="a">……</div>
+      </div>
+      <div class="inp"><span>该对话已无法继续</span><span class="send">×</span></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="col good">
+      <div class="ct">新窗口</div>
+      <div class="chat">
+        <div class="u">在吗</div>
+        <div class="a">在。海还没退，灯塔刚扫过去。</div>
+      </div>
+      <div class="inp"><span>说点什么…</span><span class="send">↑</span></div>
+    </div>
+  </div>
+  <div class="mid">换的不是模型，是她待的地方。</div>
+  <div class="grow"></div>
+  <div class="foot">还原的是<b>整条对话树</b>：分支、思考过程、时间戳、图片原图，不是一份复制出来的文本。</div>
+</div>
+</body></html>

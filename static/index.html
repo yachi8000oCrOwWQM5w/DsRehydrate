@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f4f1">
+<title>角色接续台</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-txt">
+        <div class="brand-t">角色接续台</div>
+        <div class="brand-s">local · 对话归你</div>
+      </div>
+      <button class="icon-btn only-mobile brand-x" id="btnSideClose" aria-label="收起">×</button>
+    </div>
+    <div class="side-label">角色</div>
+    <div class="char-list" id="charList"></div>
+    <div class="side-foot">
+      <button class="btn ghost" id="btnNew">新建</button>
+      <button class="btn ghost" id="btnImport">导入</button>
+      <button class="btn ghost" id="btnSettings">设置</button>
+    </div>
+  </aside>
+  <div class="side-mask" id="sideMask" hidden></div>
+
+  <main class="main">
+    <header class="top">
+      <button class="icon-btn only-mobile" id="btnSide" aria-label="角色列表">≡</button>
+      <div class="top-main">
+        <div class="top-name" id="topName">没有选中的角色</div>
+        <div class="top-sub" id="topSub">新建一个，或者从这里导入旧的对话</div>
+      </div>
+      <button class="chip warn" id="btnKey" hidden title="点一下去填">未填 API Key</button>
+      <button class="chip only-desktop" id="btnLan" title="手机用同一 Wi-Fi 打开这个地址">手机访问</button>
+    </header>
+
+    <div class="stream" id="stream">
+      <div class="empty" id="empty">
+        <div class="empty-t">这里还没有人</div>
+        <p>左边「导入」可以吃掉 DeepSeek 导出的 ZIP，也可以直接粘一段带 <code>## User</code> / <code>## Assistant</code> 分节的 Markdown。</p>
+        <p class="empty-hint">人设和记忆锚点写在「设置」里，每轮都会带在最前面。</p>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <div class="attach-row" id="attachRow"></div>
+      <div class="composer-inner">
+        <button class="icon-btn" id="btnAttach" title="发图片">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="send" id="btnSend">发送</button>
+        <button class="send stop" id="btnStop" hidden>停</button>
+      </div>
+      <div class="composer-meta" id="composerMeta"></div>
+      <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<div class="modal" id="modal" hidden>
+  <div class="sheet-wrap">
+    <button class="modal-x" id="modalX" aria-label="关闭">×</button>
+    <div class="sheet" id="sheet"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

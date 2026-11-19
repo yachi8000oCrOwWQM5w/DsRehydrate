@@ -1,0 +1,9 @@
+{
+  "name": "角色接续台",
+  "short_name": "接续台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f4f1",
+  "theme_color": "#f5f4f1",
+  "icons": []
+}

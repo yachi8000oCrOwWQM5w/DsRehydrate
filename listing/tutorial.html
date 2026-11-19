@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1080px;height:1350px;background:#f6f9f8;overflow:hidden;color:#12211f;
+  font-family:"Microsoft YaHei","PingFang SC",-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{padding:64px 66px 54px;height:100%;display:flex;flex-direction:column}
+.kicker{font-size:21px;letter-spacing:.22em;color:#5c8a7d}
+h1{font-size:58px;font-weight:800;letter-spacing:-.02em;margin-top:16px;line-height:1.2}
+.sub{font-size:25px;color:#6d8b82;margin-top:14px;line-height:1.6}
+
+.steps{margin-top:44px}
+.step{display:flex;gap:22px;padding:22px 0;border-bottom:1px solid #e2ebe7}
+.step:last-child{border-bottom:0}
+.num{width:56px;height:56px;flex:none;border-radius:16px;background:#2e6b5a;color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700}
+.st{font-size:31px;font-weight:700;line-height:1.35}
+.sd{font-size:23px;color:#5f7a71;margin-top:9px;line-height:1.55}
+.path{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.pill{background:#fff;border:1.5px solid #cfe0d8;border-radius:9px;padding:8px 13px;font-size:20px;color:#2e6b5a}
+.arr{color:#a9bdb5;font-size:18px}
+
+
+.mock{display:flex;align-items:center;gap:26px;margin-top:34px}
+.win{width:640px;border:2px solid #d7e5df;border-radius:14px;overflow:hidden;background:#fff;
+  box-shadow:0 14px 30px rgba(46,107,90,.10)}
+.wbar{height:38px;background:#eef4f1;display:flex;align-items:center;gap:7px;padding:0 14px;
+  border-bottom:1px solid #e2ebe7}
+.wbar i{width:9px;height:9px;border-radius:50%;background:#cfdcd6;display:block}
+.wbar span{font-size:15px;color:#8ba39a;margin-left:8px}
+.wbody{display:flex;height:214px}
+.wside{width:196px;border-right:1px solid #eef2f0;padding:16px 14px;display:flex;flex-direction:column;gap:11px}
+.wline{height:10px;border-radius:5px;background:#eef2f0}
+.wline.s{width:64%}
+.wavatar{margin-top:auto;width:44px;height:44px;border-radius:50%;background:#2e6b5a;
+  border:4px solid #cfe6dc;box-shadow:0 0 0 4px #eaf4f0;display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:12px}
+.wmain{flex:1;padding:18px 20px;display:flex;flex-direction:column;gap:10px}
+.wmsg{height:12px;border-radius:6px;background:#f0f4f2}
+.wmsg.a{width:78%}.wmsg.b{width:56%}
+.callout{font-size:23px;color:#2e6b5a;line-height:1.6;font-weight:700}
+.callout span{display:block;font-size:18px;color:#8ba39a;font-weight:400;margin-top:6px}
+.note{margin-top:auto;background:#fff;border:1.5px solid #e2ebe7;border-radius:16px;padding:22px 24px}
+.nh{font-size:21px;font-weight:700;color:#8a5a2b;letter-spacing:.02em}
+.nl{font-size:21.5px;color:#4f6a61;line-height:1.7;margin-top:10px}
+.nl b{color:#12211f}
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:28px;font-size:20px;color:#8ba39a}
+</style></head><body>
+<div class="wrap">
+  <div class="kicker">DEEPSEEK 数据导出</div>
+  <h1>三步，把对话导出来</h1>
+  <div class="sub">只要电脑。手机 App 里没有这个入口，找不到不是你的问题。</div>
+
+  <div class="steps">
+    <div class="step">
+      <div class="num">01</div>
+      <div>
+        <div class="st">电脑浏览器打开并登录</div>
+        <div class="sd">chat.deepseek.com　　用你平时那个号</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="num">02</div>
+      <div>
+        <div class="st">左下角头像 → 设置 → 数据管理</div>
+        <div class="path">
+          <span class="pill">头像</span><span class="arr">→</span>
+          <span class="pill">设置</span><span class="arr">→</span>
+          <span class="pill">数据管理</span><span class="arr">→</span>
+          <span class="pill">导出所有历史对话</span>
+        </div>
+        <div class="sd">点完要等一会儿，页面提示"已生成"再下载</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="num">03</div>
+      <div>
+        <div class="st">下载 ZIP，存到桌面</div>
+        <div class="sd">下载链接 7 天内有效，过期要重新导一次</div>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="mock">
+    <div class="win">
+      <div class="wbar"><i></i><i></i><i></i><span>chat.deepseek.com</span></div>
+      <div class="wbody">
+        <div class="wside">
+          <div class="wline"></div><div class="wline s"></div><div class="wline"></div>
+          <div class="wline s"></div>
+          <div class="wavatar">你</div>
+        </div>
+        <div class="wmain">
+          <div class="wmsg a"></div><div class="wmsg"></div><div class="wmsg a"></div><div class="wmsg b"></div>
+        </div>
+      </div>
+    </div>
+    <div class="callout">点头像，就在左下角
+      <span>设置和数据管理都藏在它下面</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <div class="nh">两个必须注意</div>
+    <div class="nl">
+      · <b>导完别删那个对话</b>，它是你唯一的原件<br>
+      · <b>ZIP 不要发给任何人</b>，包括我——全程在你电脑上操作，我不需要这个文件
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>卡在哪一步，直接截图问我</span>
+    <span>不要自己乱点删除</span>
+  </div>
+</div>
+</body></html>
