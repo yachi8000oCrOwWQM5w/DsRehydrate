@@ -414,7 +414,8 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
 .hint a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
 
 /* 首次使用教学视频 */
-.howto{display:inline-flex;align-items:center;gap:5px;margin-top:10px;padding:7px 11px;
+.howto-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.howto{display:inline-flex;align-items:center;gap:5px;padding:7px 11px;
   border:1px solid var(--line2);border-radius:999px;background:var(--card);
   color:var(--ink);font-size:12.5px;text-decoration:none}
 .howto:hover{border-color:var(--accent);color:var(--accent)}
