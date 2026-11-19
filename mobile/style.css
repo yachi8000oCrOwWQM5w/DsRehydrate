@@ -455,3 +455,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
   .search-item{grid-template-columns:26px 1fr;padding:9px 8px}
   .search-bubble{width:26px;height:26px}
 }
+
+/* 第三个功能胶囊：回车模式 */
+.pills{flex-wrap:wrap}
+.pill{white-space:nowrap}

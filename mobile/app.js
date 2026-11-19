@@ -162,6 +162,7 @@ async function deleteChat(id) {
 const DEFAULT_CFG = {
   apiKey: "", baseUrl: "https://api.deepseek.com", model: "deepseek-flash",
   thinking: "off", budget: 128000, maxTokens: 8192, temperature: 1.1, search: false, font: 17,
+  enterSend: true,
 };
 const S = {
   char: null, msgs: [], cfg: { ...DEFAULT_CFG },
@@ -1143,16 +1144,30 @@ function chatMenu(c, closeList, refreshRows) {
 async function saveCfg() { await kvSet("cfg", S.cfg); }
 
 function syncPills() {
-  const t = $("#pillThink"), s = $("#pillSearch");
+  const t = $("#pillThink"), s = $("#pillSearch"), e = $("#pillEnter");
   if (t) t.classList.toggle("on", S.cfg.thinking === "on");
   if (s) s.classList.toggle("on", !!S.cfg.search);
+  if (e) {
+    const enterSend = S.cfg.enterSend !== false;
+    e.classList.toggle("on", enterSend);
+    e.setAttribute("aria-pressed", String(enterSend));
+    e.title = enterSend
+      ? "当前：Enter 发送，Shift+Enter 换行。点击切换"
+      : "当前：Enter 换行，Shift+Enter 发送。点击切换";
+    const label = $("#pillEnterLabel");
+    if (label) label.textContent = enterSend ? "Enter 发送" : "Enter 换行";
+    const pic = e.querySelector(".pic");
+    if (pic) pic.textContent = enterSend ? "↵" : "⇧↵";
+  }
 }
 
 async function togglePill(which) {
   if (which === "thinking") {
     S.cfg.thinking = S.cfg.thinking === "on" ? "off" : "on";
-  } else {
+  } else if (which === "search") {
     S.cfg.search = !S.cfg.search;
+  } else if (which === "enter") {
+    S.cfg.enterSend = S.cfg.enterSend === false;
   }
   syncPills();
   await saveCfg();
@@ -1363,6 +1378,7 @@ function renderChat() {
         <div class="pills">
           <button class="pill" id="pillThink" type="button"><span class="pic">◐</span>深度思考</button>
           <button class="pill" id="pillSearch" type="button"><span class="pic">◎</span>智能搜索</button>
+          <button class="pill" id="pillEnter" type="button" aria-pressed="true"><span class="pic">↵</span><span id="pillEnterLabel">Enter 发送</span></button>
         </div>
         <div class="irow">
           <button class="imgbtn" id="btnImg" type="button" aria-label="发图片">
@@ -1399,6 +1415,7 @@ function renderChat() {
   };
   $("#pillThink").onclick = () => togglePill("thinking");
   $("#pillSearch").onclick = () => togglePill("search");
+  $("#pillEnter").onclick = () => togglePill("enter");
   syncPills();
   $("#btnSend").onclick = send;
   $("#btnImg").onclick = pickImage;
@@ -1411,7 +1428,10 @@ function renderChat() {
     ta.style.height = Math.min(ta.scrollHeight, 132) + "px";
   });
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    if (e.key !== "Enter" || e.isComposing) return;
+    const enterSend = S.cfg.enterSend !== false;
+    const shouldSend = enterSend ? !e.shiftKey : e.shiftKey;
+    if (shouldSend) { e.preventDefault(); send(); }
   });
 
   renderStream();
