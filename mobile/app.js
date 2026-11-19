@@ -433,6 +433,134 @@ async function boot() {
 
 /* ---------------------------------------------------------------- 导入 */
 
+
+function linkName(res, url) {
+  const cd = res.headers.get("content-disposition") || "";
+  let name = "";
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  const plain = cd.match(/filename="?([^";]+)"?/i);
+  if (star) name = decodeURIComponent(star[1].trim());
+  else if (plain) name = plain[1].trim();
+  if (!name) {
+    try {
+      name = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+    } catch {}
+  }
+  if (!name) name = "deepseek-export.zip";
+  if (!/\.zip$/i.test(name)) name += ".zip";
+  return name.replace(/[\\/:*?"<>|]/g, "_");
+}
+
+async function handleLinkDownload(url, status, bar) {
+  let u;
+  try { u = new URL(url); } catch { throw new Error("链接格式不对，要以 https:// 开头"); }
+  if (!/^https?:$/.test(u.protocol)) throw new Error("只支持 http/https 链接");
+
+  status.textContent = "正在连接下载地址…";
+  const res = await fetch(u.href, {
+    mode: "cors",
+    credentials: "omit",
+    redirect: "follow",
+    referrerPolicy: "no-referrer",
+  });
+
+  if (!res.ok) throw new Error(`下载地址返回 ${res.status}`);
+
+  const type = (res.headers.get("content-type") || "").toLowerCase();
+  if (type.includes("text/html")) throw new Error("链接返回的是网页，不是 ZIP（可能需要登录或已经过期）");
+
+  const len = Number(res.headers.get("content-length") || 0);
+  status.textContent = len
+    ? `正在下载 ${(len / 1048576).toFixed(1)} MB…`
+    : "正在下载 ZIP，文件较大时可能要几十秒…";
+
+  const blob = await res.blob();
+  if (!blob.size) throw new Error("下载到的文件是空的");
+
+  const name = linkName(res, u.href);
+  status.textContent = `下载完成：${(blob.size / 1048576).toFixed(1)} MB，正在解析…`;
+  bar.classList.add("on");
+  bar.firstElementChild.style.width = "100%";
+
+  return new File([blob], name, { type: "application/zip" });
+}
+
+function openLinkImport() {
+  const sheet = document.createElement("div");
+  sheet.className = "sheet on";
+  sheet.innerHTML = `
+    <div class="shead"><span>粘贴下载链接导入</span><button class="icon" id="lx">✕</button></div>
+    <div class="sbody">
+      <div class="field">
+        <label>ZIP 下载链接</label>
+        <input id="lUrl" type="url" inputmode="url" placeholder="https://…" autocomplete="off">
+        <div class="hint">复制直接下载 ZIP 的链接。若提示跨域失败，先打开链接下载，再点「选择 ZIP」。</div>
+      </div>
+      <div class="dl-status" id="lStatus">支持 http/https；下载和解析都在本机完成。</div>
+      <div class="dl-bar" id="lBar"><i></i></div>
+      <button class="btn" id="lOk" style="margin-top:14px">下载并解析</button>
+      <div class="dl-help" id="lHelp"></div>
+    </div>`;
+  document.body.appendChild(sheet);
+  $("#lx").onclick = () => sheet.remove();
+
+  $("#lOk").onclick = async () => {
+    const url = $("#lUrl").value.trim();
+    const status = $("#lStatus"), bar = $("#lBar"), btn = $("#lOk");
+    const help = $("#lHelp");
+    help.textContent = "";
+    if (!url) return (status.textContent = "先把链接粘进来");
+
+    btn.disabled = true;
+    btn.textContent = "下载中…";
+    status.classList.remove("err");
+    try {
+      const file = await handleLinkDownload(url, status, bar);
+      sheet.remove();
+      await handleZip(file);
+    } catch (e) {
+      status.textContent = "下载失败：" + (e.message || e);
+      status.classList.add("err");
+      const msg = String(e.message || e);
+      const cors = /Failed to fetch|NetworkError|Load failed|cross-origin|CORS/i.test(msg);
+      help.innerHTML = (cors
+        ? "这个下载域名不允许浏览器跨域读取。<br>先打开链接下载 ZIP，再回来选文件即可。"
+        : "下载没有成功。<br>可以打开链接手动下载，再回来选择 ZIP。");
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "打开下载链接";
+      a.className = "btn ghost";
+      a.style.marginTop = "9px";
+      help.appendChild(a);
+
+      const pick = document.createElement("button");
+      pick.className = "btn ghost";
+      pick.textContent = "下载好了，选择 ZIP";
+      pick.style.marginTop = "9px";
+      const fi = document.createElement("input");
+      fi.type = "file";
+      fi.accept = ".zip,application/zip,application/x-zip-compressed";
+      fi.style.display = "none";
+      fi.onchange = async () => {
+        if (!fi.files[0]) return;
+        sheet.remove();
+        await handleZip(fi.files[0]);
+      };
+      pick.onclick = () => fi.click();
+      help.appendChild(pick);
+      help.appendChild(fi);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "下载并解析";
+      bar.classList.remove("on");
+      bar.firstElementChild.style.width = "0";
+    }
+  };
+}
+
 function openPasteImport() {
   const sheet = document.createElement("div");
   sheet.className = "sheet on";
@@ -481,6 +609,7 @@ function renderImport(back) {
       <div class="big">选择 ZIP 文件</div>
       <div class="small">300MB 的包首次解析约 10–20 秒<br>解析期间别切走页面</div>
     </div>
+    <div class="paste" id="pickLink">有下载链接？粘贴链接导入</div>
     <div class="paste" id="pickPaste">不想传大包？粘贴文本导入</div>
     <div class="prog" id="prog"></div>
     <div class="bar" id="bar"><i></i></div>
@@ -496,6 +625,7 @@ function renderImport(back) {
   inp.style.display = "none";
   document.body.appendChild(inp);
   $("#pick").onclick = () => inp.click();
+  $("#pickLink").onclick = openLinkImport;
   $("#pickPaste").onclick = openPasteImport;
   if (back) $("#impBack").onclick = back;
   inp.onchange = () => { if (inp.files[0]) handleZip(inp.files[0]); };
