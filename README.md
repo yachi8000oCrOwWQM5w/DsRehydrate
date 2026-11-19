@@ -4,7 +4,11 @@
 
 ## 在线版 · 续语
 
-**公网地址：** [https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host](https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ)
+**公网地址（必须带 sharecode）：**
+
+[https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ](https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ)
+
+> 不要只复制域名。`?sharecode=N4GSTG4GTQ` 是访问参数，缺了会返回 403。
 
 这是当前正在运行的**公网版本**，不用装 Python、不用建服务器，打开即用：
 
