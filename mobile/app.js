@@ -608,6 +608,7 @@ function renderImport(back) {
     <div class="howto-row">
       <a class="howto" href="https://www.bilibili.com/video/BV1izsh65ET4/" target="_blank" rel="noopener noreferrer">▶ 第一次用？看教学视频</a>
       <a class="howto" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">去开放平台创建 API Key</a>
+      <a class="howto repo" href="https://github.com/yachi8000oCrOwWQM5w/DsRehydrate" target="_blank" rel="noopener noreferrer">GitHub 仓库 ↗</a>
     </div>
     <div class="pick" id="pick">
       <div class="big">选择 ZIP 文件</div>

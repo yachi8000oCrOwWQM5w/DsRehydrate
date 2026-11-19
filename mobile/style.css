@@ -419,3 +419,6 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
   border:1px solid var(--line2);border-radius:999px;background:var(--card);
   color:var(--ink);font-size:12.5px;text-decoration:none}
 .howto:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 导入页 GitHub 入口靠右 */
+.howto.repo{margin-left:auto}
