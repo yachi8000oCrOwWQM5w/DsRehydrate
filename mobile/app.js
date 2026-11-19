@@ -601,7 +601,7 @@ function openPasteImport() {
 
 function renderImport(back) {
   app.innerHTML = `<div class="screen"><div class="intro">
-    <div class="brand"><div class="mark"></div><div><h1>角色接续台</h1><p>手机本地版 · 不上传</p></div></div>
+    <div class="brand"><div class="mark"></div><div><h1>续语</h1><p>本地对话续写 · 不上传</p></div></div>
     ${back ? '<div class="backline" id="impBack">← 返回对话</div>' : ""}
     <div class="lede">把导出的 ZIP 交给她，<br>在手机上接着聊</div>
     <p class="desc">在 DeepSeek 的手机 App / 客户端里也能导出：<b>生成下载链接 → 复制到浏览器地址栏打开</b>，就能拿到 ZIP。把 ZIP 交给我，后面全在本地完成。</p>
@@ -810,7 +810,7 @@ function openChatList(focusSearch = false) {
   sheet.innerHTML = `
     <div class="drawer-brand">
       <div class="logo"></div>
-      <span>角色接续台</span>
+      <span>续语</span>
     </div>
     <div class="shead">
       <span>对话</span>
@@ -1807,7 +1807,7 @@ async function importOwnZip(zip, maniEntry) {
   const mani = JSON.parse(new TextDecoder().decode(await zip.read(maniEntry)));
   const chats = mani.chats || [];
   const total = chats.reduce((n, c) => n + (c.msgs || []).length, 0);
-  if (!confirm(`这是角色接续台的备份包：${chats.length} 段对话、${total} 条消息。\n\n导入会覆盖手机上现有数据，继续吗？`)) return;
+  if (!confirm(`这是「续语」的备份包：${chats.length} 段对话、${total} 条消息。\n\n导入会覆盖手机上现有数据，继续吗？`)) return;
 
   const keepKey = S.cfg.apiKey;
   await wipe();

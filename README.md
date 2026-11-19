@@ -1,8 +1,8 @@
-# 角色接续台 · DsRehydrate
+# 续语 · DsRehydrate
 
 把从 DeepSeek 导出的历史对话接回本地，用你自己的 API Key 继续聊。桌面端和手机 PWA 共用一套本地数据格式，图片、人设、锚点、思考过程都保留。
 
-## 在线版 · 角色接续台
+## 在线版 · 续语
 
 **公网地址：** [https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host](https://wbapp-vtlutfpxprgkrvaikbmocs.app.workbuddy.host/?sharecode=N4GSTG4GTQ)
 

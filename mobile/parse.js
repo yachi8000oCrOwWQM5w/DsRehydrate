@@ -167,7 +167,7 @@ export function packAll(chats, cfg) {
 }
 
 export function unpack(json) {
-  if (!json || json.app !== PACK_TAG) throw new Error("这不是角色接续台导出的备份文件");
+  if (!json || json.app !== PACK_TAG) throw new Error("这不是「续语」导出的备份文件");
   if (json.v >= 2 && Array.isArray(json.chats)) {
     return {
       cfg: json.cfg || {},

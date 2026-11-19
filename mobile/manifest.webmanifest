@@ -1,6 +1,6 @@
 {
-  "name": "角色接续台",
-  "short_name": "接续台",
+  "name": "续语",
+  "short_name": "续语",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
