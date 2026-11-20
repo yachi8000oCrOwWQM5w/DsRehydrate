@@ -321,21 +321,20 @@ textarea{flex:1;border:0;background:none;resize:none;outline:none;font:inherit;l
 /* ================= 边缘刻度时间线（宽屏） ================= */
 .narrow-only{display:flex}
 .timeline-rail{display:none;position:fixed;right:29px;top:58px;bottom:92px;width:44px;z-index:50}
-.mini-rail{position:absolute;right:10px;top:12px;bottom:12px;width:3px;border-radius:99px;
-  background:transparent;cursor:pointer;touch-action:none;transition:background .12s ease}
-.timeline-rail:hover .mini-rail{background:#eef1f6}
-.mini-thumb{position:absolute;right:-5px;width:14px;border-radius:99px;background:#dce5f7;
-  border:1px solid #ccd9f1;z-index:1;opacity:0;transition:opacity .12s ease,background .12s ease;pointer-events:none}
-.timeline-rail:hover .mini-thumb{opacity:1;background:#c8d9f4}
+.mini-rail{position:absolute;right:10px;top:12px;bottom:12px;width:3px;border-radius:99px;background:transparent}
 .timeline-tick{position:absolute;right:-5px;width:9px;height:2px;border:0;padding:0;border-radius:2px;
   background:#d1d6de;cursor:pointer;z-index:2;transition:width .12s ease,background .12s ease,right .12s ease}
 .timeline-tick:hover,.timeline-tick.active{background:#5b8cff;width:14px;right:-8px}
-.timeline-pop{position:fixed;right:24px;width:248px;background:#fff;border:1px solid #e8eaf0;
-  border-radius:14px;box-shadow:0 14px 34px rgba(15,23,42,.12);padding:8px;
+.timeline-pop{position:fixed;right:24px;top:76px;width:248px;max-height:calc(100vh - 150px);
+  display:flex;flex-direction:column;background:#fff;border:1px solid #e8eaf0;
+  border-radius:16px;box-shadow:0 14px 34px rgba(15,23,42,.12);padding:8px;
   opacity:0;transform:translateX(8px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
 .timeline-rail.expanded .timeline-pop{opacity:1;transform:none;pointer-events:auto}
-.timeline-head{font-size:12px;color:#8d94a1;padding:4px 6px 8px;border-bottom:1px solid #f0f2f6;margin-bottom:4px}
-.timeline-items{max-height:300px;overflow:auto}
+.timeline-head{flex:none;font-size:12px;color:#8d94a1;padding:4px 6px 8px;border-bottom:1px solid #f0f2f6;margin-bottom:4px}
+.timeline-items{flex:1;min-height:0;overflow-y:auto;padding-right:4px;
+  scrollbar-width:thin;scrollbar-color:#cbd1dc transparent}
+.timeline-items::-webkit-scrollbar{width:6px}
+.timeline-items::-webkit-scrollbar-thumb{background:#cbd1dc;border-radius:99px}
 .timeline-row{display:flex;align-items:center;justify-content:flex-end;gap:8px;width:100%;
   text-align:right;border:0;border-radius:8px;background:none;padding:6px;color:#7c8290}
 .timeline-row:hover,.timeline-row.active{background:#f3f5f9;color:#3f4655}

@@ -1336,64 +1336,22 @@ function userMsgIndexes() {
   return idxs;
 }
 
-function updateMiniThumb() {
-  if (!window.matchMedia("(min-width:900px)").matches) return;
-  const rail = $("#miniRail"), thumb = $("#miniThumb"), el = $("#stream");
-  if (!rail || !thumb || !el) return;
-  const h = Math.max(1, rail.clientHeight);
-  const total = Math.max(1, el.scrollHeight);
-  const size = Math.max(22, Math.round(h * Math.min(1, el.clientHeight / total)));
-  const max = Math.max(1, el.scrollHeight - el.clientHeight);
-  const ratio = Math.max(0, Math.min(1, el.scrollTop / max));
-  thumb.style.height = size + "px";
-  thumb.style.top = Math.round((h - size) * ratio) + "px";
-}
-
-function scrollRailTo(ratio) {
-  const el = $("#stream");
-  if (!el) return;
-  const max = Math.max(1, el.scrollHeight - el.clientHeight);
-  el.scrollTop = Math.max(0, Math.min(1, ratio)) * max;
-  updateMiniActive();
-}
-
 function buildMiniTicks() {
   const rail = $("#miniRail");
   if (!rail) return;
-  if (!window.matchMedia("(min-width:900px)").matches) {
-    rail.querySelectorAll(".timeline-tick").forEach((n) => n.remove());
-    return;
-  }
   rail.querySelectorAll(".timeline-tick").forEach((n) => n.remove());
-  if (!$("#miniThumb")) {
-    const thumb = document.createElement("div");
-    thumb.className = "mini-thumb";
-    thumb.id = "miniThumb";
-    rail.appendChild(thumb);
-  }
-
+  if (!window.matchMedia("(min-width:900px)").matches) return;
   const idxs = userMsgIndexes();
-  if (!idxs.length) { updateMiniThumb(); return; }
+  if (!idxs.length) return;
 
-  const step = Math.max(1, Math.ceil(idxs.length / 80));
+  const MAX = 18;
+  const step = Math.max(1, Math.ceil(idxs.length / MAX));
   const samples = [];
   for (let i = 0; i < idxs.length; i += step) samples.push(idxs[i]);
   if (samples[samples.length - 1] !== idxs[idxs.length - 1]) samples.push(idxs[idxs.length - 1]);
 
-  const el = $("#stream");
-  const streamTop = el?.getBoundingClientRect().top || 0;
-  const max = Math.max(1, (el?.scrollHeight || 1) - (el?.clientHeight || 1));
-  const viewAnchor = (el?.clientHeight || 0) * 0.35;
-
   rail.insertAdjacentHTML("beforeend", samples.map((idx, i) => {
-    const node = el?.querySelector(`.msg[data-idx="${idx}"]`);
-    let pct;
-    if (node) {
-      const y = node.getBoundingClientRect().top - streamTop + (el?.scrollTop || 0) - viewAnchor;
-      pct = Math.max(0, Math.min(100, (y / max) * 100));
-    } else {
-      pct = (i / Math.max(1, samples.length - 1)) * 100;
-    }
+    const pct = (i / Math.max(1, samples.length - 1)) * 100;
     return `<button type="button" class="timeline-tick" data-idx="${idx}"
       style="top:${pct.toFixed(3)}%" title="${esc((S.msgs[idx].text || "").slice(0, 40))}"></button>`;
   }).join(""));
@@ -1402,7 +1360,6 @@ function buildMiniTicks() {
     b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
   });
   updateMiniActive();
-  updateMiniThumb();
 }
 
 function updateMiniActive() {
@@ -1431,7 +1388,6 @@ function updateMiniActive() {
     if (d < bestD) { bestD = d; best = t; }
   });
   ticks.forEach((t) => t.classList.toggle("active", t === best));
-  updateMiniThumb();
 }
 
 function showMiniPreview(ratio) {
@@ -1440,34 +1396,30 @@ function showMiniPreview(ratio) {
   const idxs = userMsgIndexes();
   if (!idxs.length) { box.innerHTML = ""; return; }
 
-  const r = Math.max(0, Math.min(1, ratio));
-  const center = Math.round(r * (idxs.length - 1));
-  const from = Math.max(0, center - 4);
-  const to = Math.min(idxs.length, center + 5);
-  const rows = [];
-
-  for (let i = from; i < to; i++) {
-    const idx = idxs[i];
-    const m = S.msgs[idx];
-    const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
-    const activeIdx = Number($("#miniRail .timeline-tick.active")?.dataset.idx);
-    rows.push(`<button type="button" class="timeline-row${idx === activeIdx ? " active" : ""}" data-idx="${idx}">
-      <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
-      <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
-    </button>`);
+  if (box.dataset.count !== String(idxs.length)) {
+    box.dataset.count = String(idxs.length);
+    box.innerHTML = idxs.map((idx) => {
+      const m = S.msgs[idx];
+      const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
+      return `<button type="button" class="timeline-row" data-idx="${idx}">
+        <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
+        <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
+      </button>`;
+    }).join("");
+    box.querySelectorAll(".timeline-row").forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
+    });
+    const head = $("#miniPanel .timeline-head");
+    if (head) head.textContent = `聊天时间线 · ${idxs.length} 段提问`;
   }
 
-  box.innerHTML = rows.join("");
-  box.querySelectorAll(".timeline-row").forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
+  const activeIdx = Number($("#miniRail .timeline-tick.active")?.dataset.idx);
+  box.querySelectorAll(".timeline-row").forEach((row) => {
+    row.classList.toggle("active", Number(row.dataset.idx) === activeIdx);
   });
 
-  const panel = $("#miniPanel");
-  if (panel) {
-    const h = Math.min(300, 12 + rows.length * 28);
-    const y = Math.max(70, Math.min(window.innerHeight - h - 20, r * window.innerHeight - h / 2));
-    panel.style.top = y + "px";
-  }
+  const r = Math.max(0, Math.min(1, ratio));
+  box.scrollTop = r * Math.max(0, box.scrollHeight - box.clientHeight);
 }
 
 function bindMinimap() {
@@ -1479,42 +1431,22 @@ function bindMinimap() {
     return Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height)));
   };
 
-  let dragging = false;
   mini.addEventListener("mouseenter", (e) => {
     mini.classList.add("expanded");
     showMiniPreview(ratioAt(e));
   });
   mini.addEventListener("mousemove", (e) => {
-    if (mini.classList.contains("expanded")) showMiniPreview(ratioAt(e));
+    if (!mini.classList.contains("expanded")) return;
+    if (!e.target.closest("#miniRail")) return;
+    showMiniPreview(ratioAt(e));
   });
-  mini.addEventListener("mouseleave", () => {
-    if (!dragging) mini.classList.remove("expanded");
-  });
+  mini.addEventListener("mouseleave", () => mini.classList.remove("expanded"));
 
-  rail.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".timeline-tick")) return;
-    dragging = true;
-    rail.setPointerCapture(e.pointerId);
-    mini.classList.add("expanded");
-    scrollRailTo(ratioAt(e));
-    showMiniPreview(ratioAt(e));
-  });
-  rail.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    scrollRailTo(ratioAt(e));
-    showMiniPreview(ratioAt(e));
-  });
-  const stopDrag = () => {
-    if (!dragging) return;
-    dragging = false;
-    mini.classList.remove("expanded");
-  };
-  rail.addEventListener("pointerup", stopDrag);
-  rail.addEventListener("pointercancel", stopDrag);
-  rail.addEventListener("click", (e) => {
-    if (e.target.closest(".timeline-tick")) return;
-    scrollRailTo(ratioAt(e));
-  });
+  rail.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const box = $("#miniItems");
+    if (box) box.scrollTop += e.deltaY;
+  }, { passive: false });
 
   $("#stream").addEventListener("scroll", () => {
     if (!window.matchMedia("(min-width:900px)").matches) return;
@@ -1522,12 +1454,11 @@ function bindMinimap() {
     S.miniRaf = requestAnimationFrame(() => {
       S.miniRaf = 0;
       updateMiniActive();
-      updateMiniThumb();
     });
   }, { passive: true });
 
   if (!S.miniResizeBound) {
-    window.addEventListener("resize", () => { buildMiniTicks(); updateMiniThumb(); });
+    window.addEventListener("resize", buildMiniTicks);
     S.miniResizeBound = true;
   }
 }
@@ -1570,7 +1501,7 @@ function renderChat() {
       <div class="cmeta" id="cmeta"></div>
     </div>
     <div class="timeline-rail" id="mini" aria-label="时间线">
-      <div class="mini-rail" id="miniRail"><div class="mini-thumb" id="miniThumb"></div></div>
+      <div class="mini-rail" id="miniRail"></div>
       <div class="timeline-pop" id="miniPanel">
         <div class="timeline-head">聊天时间线</div>
         <div class="timeline-items" id="miniItems"></div>
