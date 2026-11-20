@@ -138,6 +138,9 @@ export const PACK_TAG = "rehydrate-mobile";
 const cleanMsgs = (msgs) => (msgs || []).map((m) => ({
   role: m.role, text: m.text, ts: m.ts || 0,
   reasoning: m.reasoning || "", images: m.images || [],
+  status: m.status || "done", finishReason: m.finishReason || "",
+  thinkStart: m.thinkStart || 0, thinkEnd: m.thinkEnd || 0,
+  error: m.error || null, cites: m.cites || [],
 }));
 
 // v2：一次带走所有对话
@@ -155,6 +158,7 @@ export function packAll(chats, cfg) {
       temperature: cfg?.temperature ?? 1.1,
       font: cfg?.font || 15,
       search: !!cfg?.search,
+      enterSend: cfg?.enterSend !== false,
     },
     chats: (chats || []).map((c) => ({
       name: c.name || "未命名",

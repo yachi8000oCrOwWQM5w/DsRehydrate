@@ -119,6 +119,7 @@ async function saveActiveMsgs() {
 async function switchChat(id) {
   const c = S.chats.find((x) => x.id === id);
   if (!c) return;
+  saveCurrentDraft();
   S.activeId = id;
   S.char = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors };
   S.msgs = (await kvGet(msgsKey(id))) || [];
@@ -139,6 +140,7 @@ async function createChat(name) {
 }
 
 async function deleteChat(id) {
+  S.drafts.delete(id);
   // 顺带清掉这段对话引用的图片，不然库会越用越大
   const msgs = (await kvGet(msgsKey(id)).catch(() => null)) || [];
   for (const m of msgs) {
@@ -169,12 +171,85 @@ const S = {
   zip: null, rows: [], busy: false, ctrl: null,
   urls: new Map(), showFrom: null, pending: [],
   chats: [], activeId: null,
+  drafts: new Map(),
 };
 const $ = (s) => document.querySelector(s);
 function applyFont() {
   document.documentElement.style.setProperty("--chat-font", (S.cfg.font || 15) + "px");
 }
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const draftKey = () => S.activeId || "new";
+
+function saveCurrentDraft() {
+  const ta = $("#input");
+  if (!ta) return;
+  const key = draftKey();
+  if (ta.value) S.drafts.set(key, ta.value);
+  else S.drafts.delete(key);
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function imagesFromIds(ids) {
+  const out = [];
+  for (const id of ids || []) {
+    const rec = await fileGet(id).catch(() => null);
+    if (!rec) continue;
+    out.push({ dl: await blobToDataUrl(rec.blob), blob: rec.blob });
+  }
+  return out;
+}
+
+function canContinueMsg(m) {
+  if (!m || m.role !== "assistant" || m.error) return false;
+  if (m.status === "stopped") return true;
+  return /max_tokens|length/i.test(String(m.finishReason || ""));
+}
+
+function thinkingSummary(m) {
+  const n = (m.reasoning || "").length;
+  if (!n) return "思考过程";
+  if (m.thinkStart && m.thinkEnd) {
+    const sec = Math.max(1, Math.round((m.thinkEnd - m.thinkStart) / 1000));
+    return `已思考 ${sec} 秒（${n} 字）`;
+  }
+  return `思考过程（${n} 字）`;
+}
+
+function apiError(status, raw) {
+  const message = String(raw || "").slice(0, 200);
+  if (status === 401 || status === 403 || /invalid api key|unauthorized|authentication/i.test(message)) {
+    return { status, message: "API Key 无效或没有权限", action: "apiKey" };
+  }
+  if (status === 402 || /insufficient|balance|余额|充值/i.test(message)) {
+    return { status, message: "账户余额不足", action: "topUp" };
+  }
+  if (status === 429) {
+    return { status, message: "请求太频繁，稍后再试", action: "" };
+  }
+  if (status >= 500) {
+    return { status, message: "服务暂时不可用，稍后再试", action: "" };
+  }
+  return { status, message: message || "请求失败", action: "" };
+}
+
+function errorNoticeHTML(err) {
+  if (!err) return "";
+  const action = err.action === "apiKey"
+    ? ' <button type="button" class="notice-act" data-act="fixKey">去设置</button>'
+    : err.action === "topUp"
+      ? ' <a class="notice-act" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">去充值</a>'
+      : "";
+  return `<div class="notice bad" style="margin-top:8px">${esc(err.message || "出错了")}${action}</div>`;
+}
 const app = document.getElementById("app");
 const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID()
@@ -1218,9 +1293,30 @@ async function onMsgAction(e) {
     return;
   }
 
+  if (act === "fixKey") {
+    openSettings();
+    return;
+  }
+
   if (act === "regen") {
     await regenerate();
+    return;
   }
+
+  if (act === "continue") {
+    await continueGeneration(idx);
+  }
+}
+
+async function continueGeneration(idx) {
+  if (S.busy) return;
+  const m = S.msgs[idx];
+  if (!canContinueMsg(m)) return;
+  let userIdx = idx - 1;
+  while (userIdx >= 0 && S.msgs[userIdx].role !== "user") userIdx--;
+  if (userIdx < 0) return;
+  const imgs = await imagesFromIds(S.msgs[userIdx].images);
+  await runStream(S.msgs[userIdx].text || "", imgs, { prefixIdx: idx });
 }
 
 
@@ -1406,7 +1502,7 @@ function renderChat() {
   $("#btnSet").onclick = openSettings;
   $("#btnTimeline").onclick = openTimeline;
   $("#btnChats").onclick = () => openChatList();
-  if (!S.actBound) { $("#stream").addEventListener("click", onMsgAction); S.actBound = true; }
+  $("#stream").addEventListener("click", onMsgAction);
   $("#btnMenu").onclick = () => openChatList();
   $("#btnSearch").onclick = () => openMessageSearch();
   $("#btnNewTop").onclick = () => {
@@ -1423,7 +1519,11 @@ function renderChat() {
   bindMinimap();
 
   const ta = $("#input");
+  ta.value = S.drafts.get(draftKey()) || "";
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 132) + "px";
   ta.addEventListener("input", () => {
+    saveCurrentDraft();
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 132) + "px";
   });
@@ -1483,22 +1583,25 @@ function msgNode(m, opts = {}) {
   const u = m.role === "user";
   const imgs = (m.images || []).map((id) => `<img data-f="${id}" alt="" loading="lazy" decoding="async">`).join("");
   const think = m.reasoning
-    ? `<details class="think"><summary>思考过程</summary><div class="tb">${esc(m.reasoning)}</div></details>` : "";
+    ? `<details class="think"><summary>${esc(thinkingSummary(m))}</summary><div class="tb">${esc(m.reasoning)}</div></details>` : "";
   const cites = (m.cites || []).length
     ? `<div class="cites"><span>来源</span>${m.cites.map((c) =>
         `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title || new URL(c.url).hostname)}</a>`).join("")}</div>` : "";
+  const err = m.error ? errorNoticeHTML(m.error) : "";
   const acts = typeof opts.idx === "number"
     ? `<div class="mact">
         <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
         ${u ? "" : `<button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>`}
         <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
         ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
+        ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
        </div>` : "";
   return `<div class="msg ${u ? "u" : ""}" ${typeof opts.idx === "number" ? `data-idx="${opts.idx}"` : ""}><div class="body">
     ${think}
     <div class="text">${md(m.text)}</div>
     ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
     ${cites}
+    ${err}
     ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
     ${acts}
   </div></div>`;
@@ -1528,6 +1631,7 @@ function renderStream() {
   html += S.msgs.slice(start).map((m, i) => msgNode(m, {
     idx: start + i,
     canRegen: start + i === total - 1 && m.role !== "user",
+    canContinue: start + i === total - 1 && canContinueMsg(m),
   })).join("");
   el.innerHTML = html;
   el.scrollTop = el.scrollHeight;
@@ -1609,6 +1713,7 @@ async function send() {
 
   ta.value = "";
   ta.style.height = "auto";
+  S.drafts.delete(draftKey());
   S.pending = [];
   renderPending();
 
@@ -1625,37 +1730,98 @@ async function send() {
   await runStream(text, imgs);
 }
 
-async function runStream(text, images = []) {
-  const node = appendNode(`<div class="msg"><div class="body">
-    <details class="think live" hidden><summary>思考中…</summary><div class="tb"></div></details>
-    <div class="text"><span class="caret"></span></div>
-  </div></div>`);
-  const textEl = node.querySelector(".text");
-  const thinkEl = node.querySelector(".think");
-  const thinkBody = node.querySelector(".tb");
+async function runStream(text, images = [], opts = {}) {
+  const prefixIdx = typeof opts.prefixIdx === "number" ? opts.prefixIdx : null;
+  const prefix = prefixIdx != null ? S.msgs[prefixIdx] : null;
+
+  let node, textEl, thinkEl, thinkBody;
+  if (prefix) {
+    node = $("#stream").querySelector(`.msg[data-idx="${prefixIdx}"]`);
+    if (!node) return;
+    node.classList.add("busy");
+    node.querySelector(".mact")?.remove();
+    node.querySelector(".notice.bad")?.remove();
+    textEl = node.querySelector(".text");
+    thinkEl = node.querySelector(".think");
+    if (!thinkEl) {
+      thinkEl = document.createElement("details");
+      thinkEl.className = "think live";
+      thinkEl.innerHTML = "<summary>思考中…</summary><div class=\"tb\"></div>";
+      node.querySelector(".body")?.prepend(thinkEl);
+    }
+    thinkBody = thinkEl.querySelector(".tb");
+    thinkEl.hidden = false;
+    thinkEl.open = true;
+  } else {
+    node = appendNode(`<div class="msg"><div class="body">
+      <details class="think live" hidden><summary>思考中…</summary><div class="tb"></div></details>
+      <div class="text"><span class="caret"></span></div>
+    </div></div>`);
+    textEl = node.querySelector(".text");
+    thinkEl = node.querySelector(".think");
+    thinkBody = node.querySelector(".tb");
+  }
+
+  const baseText = prefix ? (prefix.text || "") : "";
+  let reasoning = prefix ? (prefix.reasoning || "") : "";
+  let thinkStart = prefix?.thinkStart || (reasoning ? Date.now() : 0);
+  let thinkEnd = prefix?.thinkEnd || 0;
 
   S.busy = true;
   $("#btnSend").hidden = true;
   $("#btnStop").hidden = false;
   S.ctrl = new AbortController();
 
-  let acc = "", reasoning = "", queued = false;
-  const cites = [];
+  let acc = "", queued = false, finishReason = "";
+  const cites = prefix ? [...(prefix.cites || [])] : [];
   const paint = () => {
     if (queued) return;
     queued = true;
     requestAnimationFrame(() => {
       queued = false;
-      textEl.innerHTML = md(acc) + '<span class="caret"></span>';
+      textEl.innerHTML = md(baseText + acc) + '<span class="caret"></span>';
       renderMath(textEl);
       const el = $("#stream");
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
     });
   };
 
+  const saveReply = (status, err = null) => {
+    const data = {
+      role: "assistant",
+      text: baseText + acc,
+      ts: prefix?.ts || Math.floor(Date.now() / 1000),
+      reasoning: reasoning.slice(0, 4000),
+      images: [],
+      cites,
+      status,
+      finishReason: finishReason || (status === "stopped" ? "stopped" : ""),
+      thinkStart,
+      thinkEnd,
+      error: err,
+    };
+    if (prefix && prefixIdx != null) S.msgs[prefixIdx] = data;
+    else S.msgs.push(data);
+  };
+
   try {
     const budget = Math.max(2000, S.cfg.budget - S.cfg.maxTokens);
-    const { history } = pickHistory(S.msgs.slice(0, -1), budget);
+    let userIdx = -1;
+    if (prefix) {
+      for (let i = prefixIdx - 1; i >= 0; i--) {
+        if (S.msgs[i].role === "user") { userIdx = i; break; }
+      }
+      if (userIdx < 0) throw new Error("找不到续写对应的提问");
+    }
+
+    const historySource = prefix ? S.msgs.slice(0, userIdx) : S.msgs.slice(0, -1);
+    const reserve = prefix ? Math.ceil(baseText.length / 2) + 80 : 0;
+    const { history } = pickHistory(historySource, Math.max(2000, budget - reserve));
+
+    const currentUser = prefix ? S.msgs[userIdx] : null;
+    const currentImages = prefix
+      ? await imagesFromIds(currentUser?.images)
+      : images;
 
     const body = {
       model: S.cfg.model,
@@ -1669,13 +1835,17 @@ async function runStream(text, images = []) {
         })),
         {
           role: "user",
-          content: images.length
-            ? [{ type: "text", text: text || "（看图）" },
-               ...images.map((i) => ({ type: "image_url", image_url: { url: i.dl } }))]
-            : text,
+          content: currentImages.length
+            ? [{ type: "text", text: prefix ? (currentUser?.text || "（看图）") : (text || "（看图）") },
+               ...currentImages.map((i) => ({ type: "image_url", image_url: { url: i.dl } }))]
+            : (prefix ? (currentUser?.text || "") : text),
         },
       ],
     };
+    if (prefix) {
+      body.messages.push({ role: "assistant", content: baseText });
+      body.messages.push({ role: "user", content: "继续刚才的回答。不要重复已经输出的内容，也不要解释，直接从中断处接着写。" });
+    }
     if (S.cfg.search) body.tools = [{ type: "deepseek_web_search" }];
     if (S.cfg.thinking === "off") body.thinking = { type: "disabled" };
     if (S.cfg.thinking === "on") body.thinking = { type: "enabled" };
@@ -1689,8 +1859,11 @@ async function runStream(text, images = []) {
     });
 
     if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`上游 ${res.status}：${t.slice(0, 240)}`);
+      const raw = await res.text();
+      const err = new Error(`上游 ${res.status}：${raw.slice(0, 200)}`);
+      err.status = res.status;
+      err.info = apiError(res.status, raw);
+      throw err;
     }
 
     const reader = res.body.getReader();
@@ -1710,6 +1883,8 @@ async function runStream(text, images = []) {
         if (payload === "[DONE]") continue;
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
+        if (ev.finish_reason) finishReason = ev.finish_reason;
+
         const anns = ev.annotations || (ev.choices || []).flatMap((ch) =>
           ch.message?.annotations || ch.delta?.annotations || []);
         for (const a of anns || []) {
@@ -1719,20 +1894,27 @@ async function runStream(text, images = []) {
         }
 
         for (const ch of ev.choices || []) {
+          if (ch.finish_reason) finishReason = ch.finish_reason;
           const d = ch.delta || {};
           if (d.reasoning_content) {
+            if (!thinkStart) thinkStart = Date.now();
             reasoning += d.reasoning_content;
             thinkEl.hidden = false;
+            thinkEl.open = true;
             thinkEl.querySelector("summary").textContent = `思考中… ${reasoning.length} 字`;
             thinkBody.textContent = reasoning.length > 1500 ? "…" + reasoning.slice(-1500) : reasoning;
             thinkBody.scrollTop = thinkBody.scrollHeight;
           }
           if (d.content) {
             if (!acc) {
+              if (thinkStart && !thinkEnd) thinkEnd = Date.now();
               if (!thinkEl.hidden) {
                 thinkEl.classList.remove("live");
                 thinkEl.open = false;
-                thinkEl.querySelector("summary").textContent = `思考过程（${reasoning.length} 字）`;
+                thinkEl.querySelector("summary").textContent =
+                  thinkStart && thinkEnd
+                    ? `已思考 ${Math.max(1, Math.round((thinkEnd - thinkStart) / 1000))} 秒（${reasoning.length} 字）`
+                    : `思考过程（${reasoning.length} 字）`;
               }
             }
             acc += d.content;
@@ -1742,34 +1924,42 @@ async function runStream(text, images = []) {
       }
     }
 
-    textEl.innerHTML = md(acc) || "（空回复）";
+    if (reasoning && !thinkEnd) thinkEnd = Date.now();
+    textEl.innerHTML = md(baseText + acc) || "（空回复）";
     renderMath(textEl);
-    S.msgs.push({
-      role: "assistant", text: acc, ts: Math.floor(Date.now() / 1000),
-      reasoning: reasoning.slice(0, 4000), images: [], cites,
-    });
+    saveReply("done");
     await saveActiveMsgs();
+    renderStream();
   } catch (e) {
     const abort = e.name === "AbortError";
+    const info = abort ? null : (e.info || apiError(e.status || 0, e.message));
     if (abort && acc.trim()) {
-      textEl.innerHTML = md(acc);
-      renderMath(textEl);
-      S.msgs.push({
-        role: "assistant", text: acc, ts: Math.floor(Date.now() / 1000),
-        reasoning: reasoning.slice(0, 4000), images: [], cites,
+      saveReply("stopped");
+      await saveActiveMsgs();
+      renderStream();
+    } else if (abort && prefix) {
+      Object.assign(S.msgs[prefixIdx], {
+        status: "stopped", finishReason: "stopped",
+        reasoning: reasoning.slice(0, 4000), thinkStart, thinkEnd,
       });
       await saveActiveMsgs();
+      renderStream();
+    } else if (acc.trim() || prefix) {
+      saveReply("error", info);
+      await saveActiveMsgs();
+      renderStream();
     } else {
-      node.querySelector(".body").insertAdjacentHTML("beforeend",
-        `<div class="notice bad" style="margin-top:8px">${esc(abort ? "已停止" : "出错了：" + (e.message || e))}</div>`);
+      node.querySelector(".body").insertAdjacentHTML("beforeend", errorNoticeHTML(info));
       textEl.innerHTML = "";
     }
   } finally {
     S.busy = false;
     S.ctrl = null;
-    $("#btnSend").hidden = false;
-    $("#btnStop").hidden = true;
-    $("#csub").textContent = `${S.msgs.length} 条 · ${S.char.persona ? "已设人设" : "还没设人设"}`;
+    const send = $("#btnSend"), stop = $("#btnStop");
+    if (send) send.hidden = false;
+    if (stop) stop.hidden = true;
+    const sub = $("#csub");
+    if (sub) sub.textContent = `${S.msgs.length} 条 · ${S.char?.persona ? "已设人设" : "还没设人设"}`;
     buildMiniTicks();
   }
 }
