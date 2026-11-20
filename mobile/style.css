@@ -323,9 +323,10 @@ textarea{flex:1;border:0;background:none;resize:none;outline:none;font:inherit;l
 .timeline-rail{display:none;position:fixed;right:29px;top:58px;bottom:92px;width:44px;z-index:50}
 .mini-rail{position:absolute;right:10px;top:12px;bottom:12px;width:3px;border-radius:99px;background:transparent}
 .timeline-tick{position:absolute;right:-5px;width:9px;height:2px;border:0;padding:0;border-radius:2px;
-  background:#d1d6de;cursor:pointer;z-index:2;transition:width .12s ease,background .12s ease,right .12s ease}
+  background:#d1d6de;cursor:pointer;z-index:2;transition:opacity .12s ease,width .12s ease,background .12s ease,right .12s ease}
 .timeline-tick:hover,.timeline-tick.active{background:#5b8cff;width:14px;right:-8px}
-.timeline-pop{position:fixed;right:24px;top:76px;width:248px;max-height:calc(100vh - 150px);
+.timeline-rail.expanded .timeline-tick{opacity:0;pointer-events:none}
+.timeline-pop{position:fixed;right:24px;top:76px;width:248px;max-height:min(460px,60vh);
   display:flex;flex-direction:column;background:#fff;border:1px solid #e8eaf0;
   border-radius:16px;box-shadow:0 14px 34px rgba(15,23,42,.12);padding:8px;
   opacity:0;transform:translateX(8px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
