@@ -320,22 +320,26 @@ textarea{flex:1;border:0;background:none;resize:none;outline:none;font:inherit;l
 
 /* ================= 边缘刻度时间线（宽屏） ================= */
 .narrow-only{display:flex}
-.timeline-rail{display:none;position:fixed;right:0;top:58px;bottom:92px;width:26px;z-index:50}
-.timeline-rail-track{position:absolute;right:9px;top:14px;bottom:14px;width:1px;background:#e4e7ee;cursor:crosshair}
-.timeline-tick{position:absolute;right:-4px;width:9px;height:2px;border:0;padding:0;border-radius:2px;
-  background:#cbd1dc;cursor:pointer;transition:width .12s ease,background .12s ease}
-.timeline-tick:hover{background:#8fa1c9;width:12px;right:-5px}
-.timeline-tick.active{background:#5b8cff;width:13px;right:-6px}
-.timeline-pop{position:fixed;right:30px;width:230px;background:#fff;border:1px solid #e8eaf0;
-  border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.12);padding:6px;
+.timeline-rail{display:none;position:fixed;right:0;top:58px;bottom:92px;width:34px;z-index:50}
+.mini-rail{position:absolute;right:10px;top:12px;bottom:12px;width:3px;border-radius:99px;
+  background:#edf0f5;cursor:pointer;touch-action:none}
+.mini-thumb{position:absolute;right:-5px;width:13px;border-radius:99px;background:#d9e3f6;
+  border:1px solid #c6d5ef;z-index:1;transition:background .12s ease;pointer-events:none}
+.timeline-rail:hover .mini-thumb{background:#c8d9f4}
+.timeline-tick{position:absolute;right:-5px;width:7px;height:2px;border:0;padding:0;border-radius:2px;
+  background:#c9d0dc;cursor:pointer;z-index:2;transition:width .12s ease,background .12s ease,right .12s ease}
+.timeline-tick:hover,.timeline-tick.active{background:#5b8cff;width:11px;right:-7px}
+.timeline-pop{position:fixed;right:34px;width:248px;background:#fff;border:1px solid #e8eaf0;
+  border-radius:14px;box-shadow:0 14px 34px rgba(15,23,42,.12);padding:8px;
   opacity:0;transform:translateX(8px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
 .timeline-rail.expanded .timeline-pop{opacity:1;transform:none;pointer-events:auto}
+.timeline-head{font-size:12px;color:#8d94a1;padding:4px 6px 8px;border-bottom:1px solid #f0f2f6;margin-bottom:4px}
 .timeline-items{max-height:300px;overflow:auto}
 .timeline-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
-  text-align:left;border:0;background:none;border-radius:8px;padding:5px 6px;color:#7c8290}
+  text-align:left;border:0;border-radius:8px;background:none;padding:6px;color:#7c8290}
 .timeline-row:hover{background:#f5f7fb;color:#3f4655}
-.timeline-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px}
-.timeline-row i{width:10px;height:1px;background:#c8ced9;flex:none}
+.timeline-row .tl-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.timeline-row time{font-size:11px;color:#a3a9b4;flex:none}
 @media (min-width:900px){
   .timeline-rail{display:block}
   .narrow-only{display:none}
@@ -463,3 +467,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
 /* 新消息状态 */
 .msg.busy .mact{display:none}
 .notice-act{display:inline-block;margin-left:8px;color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+
+/* 数据操作状态 */
+.hint.ok{color:var(--accent)}
+.hint.bad{color:#b34a43}

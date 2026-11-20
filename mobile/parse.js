@@ -141,6 +141,7 @@ const cleanMsgs = (msgs) => (msgs || []).map((m) => ({
   status: m.status || "done", finishReason: m.finishReason || "",
   thinkStart: m.thinkStart || 0, thinkEnd: m.thinkEnd || 0,
   error: m.error || null, cites: m.cites || [],
+  thinkingOn: m.thinkingOn !== false, searchOn: !!m.searchOn,
 }));
 
 // v2：一次带走所有对话

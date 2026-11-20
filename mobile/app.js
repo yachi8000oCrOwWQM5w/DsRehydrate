@@ -241,6 +241,16 @@ function apiError(status, raw) {
   return { status, message: message || "请求失败", action: "" };
 }
 
+function dataResult(text, kind = "") {
+  const el = $("#dataStatus");
+  if (el) {
+    el.textContent = text;
+    el.className = "hint " + kind;
+  } else {
+    alertBox(text);
+  }
+}
+
 function errorNoticeHTML(err) {
   if (!err) return "";
   const action = err.action === "apiKey"
@@ -1326,33 +1336,73 @@ function userMsgIndexes() {
   return idxs;
 }
 
+function updateMiniThumb() {
+  if (!window.matchMedia("(min-width:900px)").matches) return;
+  const rail = $("#miniRail"), thumb = $("#miniThumb"), el = $("#stream");
+  if (!rail || !thumb || !el) return;
+  const h = Math.max(1, rail.clientHeight);
+  const total = Math.max(1, el.scrollHeight);
+  const size = Math.max(22, Math.round(h * Math.min(1, el.clientHeight / total)));
+  const max = Math.max(1, el.scrollHeight - el.clientHeight);
+  const ratio = Math.max(0, Math.min(1, el.scrollTop / max));
+  thumb.style.height = size + "px";
+  thumb.style.top = Math.round((h - size) * ratio) + "px";
+}
+
+function scrollRailTo(ratio) {
+  const el = $("#stream");
+  if (!el) return;
+  const max = Math.max(1, el.scrollHeight - el.clientHeight);
+  el.scrollTop = Math.max(0, Math.min(1, ratio)) * max;
+  updateMiniActive();
+}
+
 function buildMiniTicks() {
   const rail = $("#miniRail");
   if (!rail) return;
   if (!window.matchMedia("(min-width:900px)").matches) {
-    rail.innerHTML = "";
+    rail.querySelectorAll(".timeline-tick").forEach((n) => n.remove());
     return;
   }
-  rail.innerHTML = "";
+  rail.querySelectorAll(".timeline-tick").forEach((n) => n.remove());
+  if (!$("#miniThumb")) {
+    const thumb = document.createElement("div");
+    thumb.className = "mini-thumb";
+    thumb.id = "miniThumb";
+    rail.appendChild(thumb);
+  }
 
   const idxs = userMsgIndexes();
-  if (!idxs.length) return;
+  if (!idxs.length) { updateMiniThumb(); return; }
 
   const step = Math.max(1, Math.ceil(idxs.length / 80));
   const samples = [];
   for (let i = 0; i < idxs.length; i += step) samples.push(idxs[i]);
   if (samples[samples.length - 1] !== idxs[idxs.length - 1]) samples.push(idxs[idxs.length - 1]);
 
-  rail.innerHTML = samples.map((idx) => {
-    const pct = (idxs.indexOf(idx) / Math.max(1, idxs.length - 1)) * 100;
+  const el = $("#stream");
+  const streamTop = el?.getBoundingClientRect().top || 0;
+  const max = Math.max(1, (el?.scrollHeight || 1) - (el?.clientHeight || 1));
+  const viewAnchor = (el?.clientHeight || 0) * 0.35;
+
+  rail.insertAdjacentHTML("beforeend", samples.map((idx, i) => {
+    const node = el?.querySelector(`.msg[data-idx="${idx}"]`);
+    let pct;
+    if (node) {
+      const y = node.getBoundingClientRect().top - streamTop + (el?.scrollTop || 0) - viewAnchor;
+      pct = Math.max(0, Math.min(100, (y / max) * 100));
+    } else {
+      pct = (i / Math.max(1, samples.length - 1)) * 100;
+    }
     return `<button type="button" class="timeline-tick" data-idx="${idx}"
       style="top:${pct.toFixed(3)}%" title="${esc((S.msgs[idx].text || "").slice(0, 40))}"></button>`;
-  }).join("");
+  }).join(""));
 
   rail.querySelectorAll(".timeline-tick").forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
   });
   updateMiniActive();
+  updateMiniThumb();
 }
 
 function updateMiniActive() {
@@ -1373,7 +1423,6 @@ function updateMiniActive() {
     }
   }
 
-  // 取不晚于当前位置的最近一个用户消息刻度
   let best = ticks[0];
   let bestD = Infinity;
   ticks.forEach((t) => {
@@ -1382,6 +1431,7 @@ function updateMiniActive() {
     if (d < bestD) { bestD = d; best = t; }
   });
   ticks.forEach((t) => t.classList.toggle("active", t === best));
+  updateMiniThumb();
 }
 
 function showMiniPreview(ratio) {
@@ -1401,7 +1451,8 @@ function showMiniPreview(ratio) {
     const m = S.msgs[idx];
     const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
     rows.push(`<button type="button" class="timeline-row" data-idx="${idx}">
-      <span>${esc(text.slice(0, 46) || "（用户消息）")}</span><i></i>
+      <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
+      <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
     </button>`);
   }
 
@@ -1427,6 +1478,7 @@ function bindMinimap() {
     return Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height)));
   };
 
+  let dragging = false;
   mini.addEventListener("mouseenter", (e) => {
     mini.classList.add("expanded");
     showMiniPreview(ratioAt(e));
@@ -1434,9 +1486,33 @@ function bindMinimap() {
   mini.addEventListener("mousemove", (e) => {
     if (mini.classList.contains("expanded")) showMiniPreview(ratioAt(e));
   });
-  mini.addEventListener("mouseleave", () => mini.classList.remove("expanded"));
+  mini.addEventListener("mouseleave", () => {
+    if (!dragging) mini.classList.remove("expanded");
+  });
+
+  rail.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".timeline-tick")) return;
+    dragging = true;
+    rail.setPointerCapture(e.pointerId);
+    mini.classList.add("expanded");
+    scrollRailTo(ratioAt(e));
+    showMiniPreview(ratioAt(e));
+  });
+  rail.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    scrollRailTo(ratioAt(e));
+    showMiniPreview(ratioAt(e));
+  });
+  const stopDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    mini.classList.remove("expanded");
+  };
+  rail.addEventListener("pointerup", stopDrag);
+  rail.addEventListener("pointercancel", stopDrag);
   rail.addEventListener("click", (e) => {
-    if (e.target.closest(".timeline-tick")) return showMiniPreview(ratioAt(e));
+    if (e.target.closest(".timeline-tick")) return;
+    scrollRailTo(ratioAt(e));
   });
 
   $("#stream").addEventListener("scroll", () => {
@@ -1445,11 +1521,12 @@ function bindMinimap() {
     S.miniRaf = requestAnimationFrame(() => {
       S.miniRaf = 0;
       updateMiniActive();
+      updateMiniThumb();
     });
   }, { passive: true });
 
   if (!S.miniResizeBound) {
-    window.addEventListener("resize", buildMiniTicks);
+    window.addEventListener("resize", () => { buildMiniTicks(); updateMiniThumb(); });
     S.miniResizeBound = true;
   }
 }
@@ -1492,8 +1569,11 @@ function renderChat() {
       <div class="cmeta" id="cmeta"></div>
     </div>
     <div class="timeline-rail" id="mini" aria-label="时间线">
-      <div class="mini-rail" id="miniRail"></div>
-      <div class="timeline-pop" id="miniPanel"><div class="timeline-items" id="miniItems"></div></div>
+      <div class="mini-rail" id="miniRail"><div class="mini-thumb" id="miniThumb"></div></div>
+      <div class="timeline-pop" id="miniPanel">
+        <div class="timeline-head">聊天时间线</div>
+        <div class="timeline-items" id="miniItems"></div>
+      </div>
     </div>
   </div>`;
 
@@ -1588,6 +1668,8 @@ function msgNode(m, opts = {}) {
     ? `<div class="cites"><span>来源</span>${m.cites.map((c) =>
         `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title || new URL(c.url).hostname)}</a>`).join("")}</div>` : "";
   const err = m.error ? errorNoticeHTML(m.error) : "";
+  const filtered = (m.finishReason === "content_filter" || m.status === "refused")
+    ? '<div class="notice warn" style="margin-top:8px">内容被过滤了，换个说法再试。</div>' : "";
   const acts = typeof opts.idx === "number"
     ? `<div class="mact">
         <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
@@ -1602,6 +1684,7 @@ function msgNode(m, opts = {}) {
     ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
     ${cites}
     ${err}
+    ${filtered}
     ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
     ${acts}
   </div></div>`;
@@ -1652,12 +1735,20 @@ function renderStream() {
 
 async function regenerate() {
   if (S.busy) return;
+  const flags = {};
+  for (let i = S.msgs.length - 1; i >= 0; i--) {
+    if (S.msgs[i].role === "assistant") {
+      flags.thinkingOn = S.msgs[i].thinkingOn !== false;
+      flags.searchOn = !!S.msgs[i].searchOn;
+      break;
+    }
+  }
   while (S.msgs.length && S.msgs[S.msgs.length - 1].role !== "user") S.msgs.pop();
   if (!S.msgs.length) return;
   const lastUser = S.msgs[S.msgs.length - 1];
   await saveActiveMsgs();
   renderStream();
-  await runStream(lastUser.text, []);
+  await runStream(lastUser.text, [], flags);
 }
 
 async function pickImage() {
@@ -1715,6 +1806,7 @@ async function send() {
   ta.style.height = "auto";
   S.drafts.delete(draftKey());
   S.pending = [];
+  if (window.matchMedia("(max-width:899px)").matches) ta.blur();
   renderPending();
 
   const userMsg = {
@@ -1733,6 +1825,12 @@ async function send() {
 async function runStream(text, images = [], opts = {}) {
   const prefixIdx = typeof opts.prefixIdx === "number" ? opts.prefixIdx : null;
   const prefix = prefixIdx != null ? S.msgs[prefixIdx] : null;
+  const thinkingOn = typeof opts.thinkingOn === "boolean"
+    ? opts.thinkingOn
+    : (prefix ? prefix.thinkingOn !== false : S.cfg.thinking === "on");
+  const searchOn = typeof opts.searchOn === "boolean"
+    ? opts.searchOn
+    : (prefix ? !!prefix.searchOn : !!S.cfg.search);
 
   let node, textEl, thinkEl, thinkBody;
   if (prefix) {
@@ -1798,6 +1896,8 @@ async function runStream(text, images = [], opts = {}) {
       finishReason: finishReason || (status === "stopped" ? "stopped" : ""),
       thinkStart,
       thinkEnd,
+      thinkingOn,
+      searchOn,
       error: err,
     };
     if (prefix && prefixIdx != null) S.msgs[prefixIdx] = data;
@@ -1846,10 +1946,10 @@ async function runStream(text, images = [], opts = {}) {
       body.messages.push({ role: "assistant", content: baseText });
       body.messages.push({ role: "user", content: "继续刚才的回答。不要重复已经输出的内容，也不要解释，直接从中断处接着写。" });
     }
-    if (S.cfg.search) body.tools = [{ type: "deepseek_web_search" }];
-    if (S.cfg.thinking === "off") body.thinking = { type: "disabled" };
-    if (S.cfg.thinking === "on") body.thinking = { type: "enabled" };
-    if (S.cfg.thinking !== "on") body.temperature = Number(S.cfg.temperature) || 1.1;
+    if (searchOn) body.tools = [{ type: "deepseek_web_search" }];
+    if (!thinkingOn) body.thinking = { type: "disabled" };
+    if (thinkingOn) body.thinking = { type: "enabled" };
+    if (!thinkingOn) body.temperature = Number(S.cfg.temperature) || 1.1;
 
     const res = await fetch(S.cfg.baseUrl.replace(/\/$/, "") + "/chat/completions", {
       method: "POST",
@@ -1925,7 +2025,7 @@ async function runStream(text, images = [], opts = {}) {
     }
 
     if (reasoning && !thinkEnd) thinkEnd = Date.now();
-    textEl.innerHTML = md(baseText + acc) || "（空回复）";
+    textEl.innerHTML = md(baseText + acc) || (finishReason === "content_filter" ? "（内容被过滤）" : "（空回复）");
     renderMath(textEl);
     saveReply("done");
     await saveActiveMsgs();
@@ -2211,9 +2311,9 @@ async function exportZip() {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 8000);
 
-    alertBox(`已打包 ${manifest.chats.length} 段对话、${files.length - 1} 张图片（${(bytes / 1048576).toFixed(1)} MB）。这个 zip 可以再导入回来。`);
+    dataResult(`已打包 ${manifest.chats.length} 段对话、${files.length - 1} 张图片（${(bytes / 1048576).toFixed(1)} MB）。这个 zip 可以再导入回来。`, "ok");
   } catch (e) {
-    alertBox("打包失败：" + (e.message || e));
+    dataResult("打包失败：" + (e.message || e), "bad");
   } finally {
     btn.disabled = false;
     btn.textContent = "导出全部数据（ZIP，可再导入）";
@@ -2262,8 +2362,8 @@ async function importOwnZip(zip, maniEntry) {
   await kvSet(ACTIVE_KEY, list[0] ? list[0].id : "");
   await kvSet("cfg", { ...DEFAULT_CFG, ...(mani.cfg || {}), apiKey: keepKey });
   S.chats = list;
-  alertBox(`导入完成：${list.length} 段对话、${total} 条消息。点确定后重新载入。`);
-  location.reload();
+  dataResult(`导入完成：${list.length} 段对话、${total} 条消息。即将重新载入。`, "ok");
+  setTimeout(() => location.reload(), 900);
 }
 
 async function exportData() {
@@ -2305,7 +2405,7 @@ async function exportData() {
   const safe = safeName(S.char?.name);
   const stamp = new Date().toISOString().slice(0, 10);
   download(`${safe}-${stamp}.json`, JSON.stringify(pack));
-  alertBox(`已导出 ${chats.length} 段对话、共 ${all.length} 条${withFiles ? "，含图片" : "，不含图片"}。API Key 不在文件里，换手机后要重填。`);
+  dataResult(`已导出 ${chats.length} 段对话、共 ${all.length} 条${withFiles ? "，含图片" : "，不含图片"}。API Key 不在文件里，换手机后要重填。`, "ok");
 }
 
 async function importData() {
@@ -2341,10 +2441,10 @@ async function importData() {
       for (const [id, rec] of files) {
         await filePut({ id, name: rec.name || id, blob: b64ToBlob(rec.data) });
       }
-      alertBox(`导入完成：${list.length} 段对话、${total} 条消息${files.length ? "，" + files.length + " 张图片" : ""}。点确定后重新载入。`);
-      location.reload();
+      dataResult(`导入完成：${list.length} 段对话、${total} 条消息${files.length ? "，" + files.length + " 张图片" : ""}。即将重新载入。`, "ok");
+      setTimeout(() => location.reload(), 900);
     } catch (e) {
-      alertBox("导入失败：" + (e.message || e));
+      dataResult("导入失败：" + (e.message || e), "bad");
     }
   };
   inp.click();
@@ -2556,6 +2656,7 @@ function openSettings() {
       </div>
       <button class="btn" id="save">保存</button>
       <div class="divider"></div>
+      <div class="hint" id="dataStatus">导入会覆盖本机现有对话，操作前建议先导出备份。</div>
       <button class="btn ghost" id="expBtn" style="margin-bottom:8px">导出数据（备份 / 换手机）</button>
       <button class="btn ghost" id="zipBtn" style="margin-bottom:8px">导出全部数据（ZIP，可再导入）</button>
       <button class="btn ghost" id="cardBtn" style="margin-bottom:8px">导出角色卡 JSON（酒馆用）</button>
@@ -2608,6 +2709,11 @@ function openSettings() {
 
   $("#expBtn").onclick = exportData;
   $("#impBtn").onclick = importData;
+  const hasData = S.chats.length > 0 || S.msgs.length > 0;
+  for (const id of ["#expBtn", "#zipBtn", "#cardBtn", "#jsonlBtn"]) {
+    const b = $(id);
+    if (b) b.disabled = !hasData;
+  }
 
   $("#hardReload").onclick = hardReload;
 
