@@ -536,10 +536,7 @@ async function boot() {
   else if (sheetParam === "timeline") openTimeline();
 
   if (new URLSearchParams(location.search).get("mini") === "open") {
-    setTimeout(() => {
-      $("#mini")?.classList.add("expanded");
-      showMiniPreview(0.65);
-    }, 300);
+    setTimeout(() => $("#mini")?.classList.add("expanded"), 300);
   }
 }
 
@@ -1337,26 +1334,32 @@ function userMsgIndexes() {
 }
 
 function buildMiniTicks() {
-  const rail = $("#miniRail");
-  if (!rail) return;
-  rail.querySelectorAll(".timeline-tick").forEach((n) => n.remove());
-  if (!window.matchMedia("(min-width:900px)").matches) return;
+  const box = $("#miniItems");
+  if (!box) return;
+  if (!window.matchMedia("(min-width:900px)").matches) {
+    box.innerHTML = "";
+    box.dataset.count = "";
+    return;
+  }
   const idxs = userMsgIndexes();
-  if (!idxs.length) return;
-
-  const MAX = 18;
-  const step = Math.max(1, Math.ceil(idxs.length / MAX));
-  const samples = [];
-  for (let i = 0; i < idxs.length; i += step) samples.push(idxs[i]);
-  if (samples[samples.length - 1] !== idxs[idxs.length - 1]) samples.push(idxs[idxs.length - 1]);
-
-  rail.insertAdjacentHTML("beforeend", samples.map((idx, i) => {
-    const pct = (i / Math.max(1, samples.length - 1)) * 100;
-    return `<button type="button" class="timeline-tick" data-idx="${idx}"
-      style="top:${pct.toFixed(3)}%" title="${esc((S.msgs[idx].text || "").slice(0, 40))}"></button>`;
-  }).join(""));
-
-  rail.querySelectorAll(".timeline-tick").forEach((b) => {
+  if (!idxs.length) {
+    box.innerHTML = "";
+    box.dataset.count = "";
+    return;
+  }
+  if (box.dataset.count === String(idxs.length)) { updateMiniActive(); return; }
+  box.dataset.count = String(idxs.length);
+  box.innerHTML = idxs.map((idx) => {
+    const m = S.msgs[idx];
+    const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
+    return `<button type="button" class="timeline-row" data-idx="${idx}">
+      <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
+      <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
+    </button>`;
+  }).join("");
+  const head = $("#miniPanel .timeline-head");
+  if (head) head.textContent = `聊天时间线 · ${idxs.length} 段提问`;
+  box.querySelectorAll(".timeline-row").forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
   });
   updateMiniActive();
@@ -1364,14 +1367,14 @@ function buildMiniTicks() {
 
 function updateMiniActive() {
   if (!window.matchMedia("(min-width:900px)").matches) return;
-  const rail = $("#miniRail"), el = $("#stream");
-  if (!rail || !el) return;
-  const ticks = [...rail.querySelectorAll(".timeline-tick")];
-  if (!ticks.length) return;
+  const el = $("#stream"), box = $("#miniItems");
+  if (!el || !box) return;
+  const rows = [...box.querySelectorAll(".timeline-row")];
+  if (!rows.length) return;
 
   const nodes = [...el.querySelectorAll(".msg[data-idx]")];
   const anchor = el.getBoundingClientRect().top + el.clientHeight * 0.35;
-  let viewing = Number(ticks[ticks.length - 1].dataset.idx);
+  let viewing = Number(rows[rows.length - 1].dataset.idx);
   for (const node of nodes) {
     const r = node.getBoundingClientRect();
     if (r.bottom >= anchor) {
@@ -1380,81 +1383,26 @@ function updateMiniActive() {
     }
   }
 
-  let best = ticks[0];
+  let best = rows[0];
   let bestD = Infinity;
-  ticks.forEach((t) => {
-    const idx = Number(t.dataset.idx);
+  rows.forEach((row) => {
+    const idx = Number(row.dataset.idx);
     const d = idx <= viewing ? viewing - idx : idx - viewing + 1e6;
-    if (d < bestD) { bestD = d; best = t; }
+    if (d < bestD) { bestD = d; best = row; }
   });
-  ticks.forEach((t) => t.classList.toggle("active", t === best));
-}
-
-function showMiniPreview(ratio) {
-  const box = $("#miniItems");
-  if (!box) return;
-  const idxs = userMsgIndexes();
-  if (!idxs.length) { box.innerHTML = ""; return; }
-
-  if (box.dataset.count !== String(idxs.length)) {
-    box.dataset.count = String(idxs.length);
-    box.innerHTML = idxs.map((idx) => {
-      const m = S.msgs[idx];
-      const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
-      return `<button type="button" class="timeline-row" data-idx="${idx}">
-        <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
-        <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
-      </button>`;
-    }).join("");
-    box.querySelectorAll(".timeline-row").forEach((b) => {
-      b.onclick = (e) => { e.stopPropagation(); scrollToMsg(Number(b.dataset.idx)); };
-    });
-    const head = $("#miniPanel .timeline-head");
-    if (head) head.textContent = `聊天时间线 · ${idxs.length} 段提问`;
-  }
-
-  const activeIdx = Number($("#miniRail .timeline-tick.active")?.dataset.idx);
-  box.querySelectorAll(".timeline-row").forEach((row) => {
-    row.classList.toggle("active", Number(row.dataset.idx) === activeIdx);
-  });
-
-  const r = Math.max(0, Math.min(1, ratio));
-  box.scrollTop = r * Math.max(0, box.scrollHeight - box.clientHeight);
+  rows.forEach((row) => row.classList.toggle("active", row === best));
 }
 
 function bindMinimap() {
-  const mini = $("#mini"), rail = $("#miniRail");
-  if (!mini || !rail) return;
-
-  const ratioAt = (e) => {
-    const r = rail.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height)));
-  };
-
-  mini.addEventListener("mouseenter", (e) => {
-    mini.classList.add("expanded");
-    showMiniPreview(ratioAt(e));
-  });
-  mini.addEventListener("mousemove", (e) => {
-    if (!mini.classList.contains("expanded")) return;
-    if (!e.target.closest("#miniRail")) return;
-    showMiniPreview(ratioAt(e));
-  });
+  const mini = $("#mini");
+  if (!mini) return;
+  mini.addEventListener("mouseenter", () => mini.classList.add("expanded"));
   mini.addEventListener("mouseleave", () => mini.classList.remove("expanded"));
-
-  rail.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const box = $("#miniItems");
-    if (box) box.scrollTop += e.deltaY;
-  }, { passive: false });
 
   $("#stream").addEventListener("scroll", () => {
     if (!window.matchMedia("(min-width:900px)").matches) return;
     if (S.miniRaf) return;
-    S.miniRaf = requestAnimationFrame(() => {
-      S.miniRaf = 0;
-      updateMiniActive();
-    });
+    S.miniRaf = requestAnimationFrame(() => { S.miniRaf = 0; updateMiniActive(); });
   }, { passive: true });
 
   if (!S.miniResizeBound) {
@@ -1501,7 +1449,6 @@ function renderChat() {
       <div class="cmeta" id="cmeta"></div>
     </div>
     <div class="timeline-rail" id="mini" aria-label="时间线">
-      <div class="mini-rail" id="miniRail"></div>
       <div class="timeline-pop" id="miniPanel">
         <div class="timeline-head">聊天时间线</div>
         <div class="timeline-items" id="miniItems"></div>
