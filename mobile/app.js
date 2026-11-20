@@ -1450,9 +1450,10 @@ function showMiniPreview(ratio) {
     const idx = idxs[i];
     const m = S.msgs[idx];
     const text = (m.text || "").replace(/\\|\*\*|`|\*/g, "").replace(/\s+/g, " ").trim();
-    rows.push(`<button type="button" class="timeline-row" data-idx="${idx}">
-      <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
+    const activeIdx = Number($("#miniRail .timeline-tick.active")?.dataset.idx);
+    rows.push(`<button type="button" class="timeline-row${idx === activeIdx ? " active" : ""}" data-idx="${idx}">
       <time>${esc(searchDay(m.ts) || fmtTime(m.ts))}</time>
+      <span class="tl-txt">${esc(text.slice(0, 40) || "（用户消息）")}</span>
     </button>`);
   }
 
