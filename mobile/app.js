@@ -1685,7 +1685,7 @@ async function send() {
   ta.style.height = "auto";
   S.drafts.delete(draftKey());
   S.pending = [];
-  if (window.matchMedia("(max-width:899px)").matches) ta.blur();
+  if (window.matchMedia("(pointer: coarse)").matches) ta.blur();
   renderPending();
 
   const userMsg = {
