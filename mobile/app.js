@@ -104,10 +104,44 @@ const ACTIVE_KEY = "active";
 const msgsKey = (id) => "msgs:" + id;
 const branchesKey = (id) => "branches:" + id;
 const branchKey = (id) => "branch:" + id;
+const branchCleanKey = (id) => "branchClean:" + id;
 
 function ensureBranches() {
   if (!Array.isArray(S.branches) || !S.branches.length) S.branches = [S.msgs];
   if (!S.branches[S.branchIdx]) S.branches[S.branchIdx] = S.msgs;
+}
+
+async function cleanBranches(id, branches, branchIdx) {
+  if (!Array.isArray(branches) || !branches.length) return { branches: [[]], idx: 0 };
+  if (await kvGet(branchCleanKey(id)).catch(() => null)) return { branches, idx: branchIdx };
+
+  const sig = (arr) => JSON.stringify((arr || []).map((m) => [
+    m.role, String(m.text || ""), (m.images || []).length,
+  ]));
+  const seen = new Set();
+  const cleaned = branches.filter((b) => {
+    if (!Array.isArray(b) || b.length < 2) return false;
+    const key = sig(b);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (!cleaned.length) {
+    const fallback = branches.find((b) => Array.isArray(b) && b.length) || [];
+    cleaned.push(fallback);
+  }
+
+  let idx = Math.max(0, Math.min(Number(branchIdx) || 0, cleaned.length - 1));
+  const active = branches[branchIdx];
+  if (active && !cleaned.includes(active)) {
+    idx = cleaned.reduce((best, b, i) => (b.length > cleaned[best].length ? i : best), 0);
+  }
+
+  await kvSet(branchesKey(id), cleaned);
+  await kvSet(branchKey(id), idx);
+  await kvSet(branchCleanKey(id), 1);
+  return { branches: cleaned, idx };
 }
 
 async function persistChats() {
@@ -148,6 +182,9 @@ async function switchChat(id) {
   const stored = await kvGet(branchesKey(id));
   S.branches = Array.isArray(stored) && stored.length ? stored : [S.msgs];
   S.branchIdx = Math.max(0, Math.min(Number(await kvGet(branchKey(id))) || 0, S.branches.length - 1));
+  const cleaned = await cleanBranches(id, S.branches, S.branchIdx);
+  S.branches = cleaned.branches;
+  S.branchIdx = cleaned.idx;
   S.msgs = S.branches[S.branchIdx] || [];
   S.showFrom = null;
   S.urls.clear();
@@ -201,7 +238,7 @@ const S = {
   zip: null, rows: [], busy: false, ctrl: null,
   urls: new Map(), showFrom: null, pending: [],
   chats: [], activeId: null,
-  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null, editDraft: "",
+  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null, editDraft: "", editPendingStart: null,
 };
 const $ = (s) => document.querySelector(s);
 function applyFont() {
@@ -422,6 +459,9 @@ async function boot() {
       const storedBranches = await kvGet(branchesKey(cur.id));
       S.branches = Array.isArray(storedBranches) && storedBranches.length ? storedBranches : [S.msgs];
       S.branchIdx = Math.max(0, Math.min(Number(await kvGet(branchKey(cur.id))) || 0, S.branches.length - 1));
+      const cleaned = await cleanBranches(cur.id, S.branches, S.branchIdx);
+      S.branches = cleaned.branches;
+      S.branchIdx = cleaned.idx;
       S.msgs = S.branches[S.branchIdx] || [];
     }
   } catch {
@@ -1359,7 +1399,8 @@ async function onMsgAction(e) {
     if (S.busy || m.role !== "user") return;
     S.editIdx = idx;
     S.editDraft = m.text || "";
-    renderStream();
+    S.editPendingStart = S.pending.length;
+    renderStream({ keepScroll: true });
     requestAnimationFrame(() => {
       const ta = $("#stream [data-role=editText]");
       if (ta) { ta.focus(); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 202) + "px"; }
@@ -1370,12 +1411,20 @@ async function onMsgAction(e) {
   if (act === "cancelEdit") {
     S.editIdx = null;
     S.editDraft = "";
-    renderStream();
+    if (typeof S.editPendingStart === "number") S.pending.splice(S.editPendingStart);
+    S.editPendingStart = null;
+    renderPending();
+    renderStream({ keepScroll: true });
     return;
   }
 
   if (act === "sendEdit") {
     await sendEdit(idx);
+    return;
+  }
+
+  if (act === "editAttach") {
+    pickImage();
     return;
   }
 
@@ -1400,7 +1449,7 @@ async function continueGeneration(idx) {
   await runStream(S.msgs[userIdx].text || "", imgs, { prefixIdx: idx });
 }
 
-async function forkFrom(idx, editedText = null) {
+async function forkFrom(idx, editedText = null, extraImages = []) {
   if (S.busy) return;
   const m = S.msgs[idx];
   if (!m || m.role !== "user") return;
@@ -1411,6 +1460,11 @@ async function forkFrom(idx, editedText = null) {
   prefix[idx].text = editedText == null ? (m.text || "") : editedText;
   prefix[idx].ts = Math.floor(Date.now() / 1000);
   prefix[idx].branchAnchor = true;
+  for (const it of extraImages || []) {
+    const id = uid();
+    await filePut({ id, name: "image", blob: it.blob });
+    prefix[idx].images = [...(prefix[idx].images || []), id];
+  }
   S.branches.push(prefix);
   S.branchIdx = S.branches.length - 1;
   S.editIdx = null;
@@ -1418,7 +1472,7 @@ async function forkFrom(idx, editedText = null) {
   S.msgs = S.branches[S.branchIdx];
   await saveActiveMsgs();
   S.showFrom = null;
-  renderStream();
+  renderStream({ keepScroll: true });
   const imgs = await imagesFromIds(prefix[idx].images);
   await runStream(prefix[idx].text, imgs);
 }
@@ -1429,9 +1483,14 @@ async function sendEdit(idx) {
   if (!m || m.role !== "user") return;
   const text = String(S.editDraft || "").trim();
   if (!text) return;
+  const from = typeof S.editPendingStart === "number" ? S.editPendingStart : S.pending.length;
+  const extraImages = S.pending.slice(from);
+  S.pending.splice(from);
   S.editIdx = null;
   S.editDraft = "";
-  await forkFrom(idx, text);
+  S.editPendingStart = null;
+  renderPending();
+  await forkFrom(idx, text, extraImages);
 }
 
 function onMsgInput(e) {
@@ -1449,7 +1508,10 @@ function onMsgKeydown(e) {
     e.preventDefault();
     S.editIdx = null;
     S.editDraft = "";
-    renderStream();
+    if (typeof S.editPendingStart === "number") S.pending.splice(S.editPendingStart);
+    S.editPendingStart = null;
+    renderPending();
+    renderStream({ keepScroll: true });
     return;
   }
   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1693,12 +1755,15 @@ function msgNode(m, opts = {}) {
   const imgHtml = imgs ? `<div class="imgs">${imgs}</div>` : "";
 
   if (u && opts.editing) {
-    return `<div class="msg u"${idxAttr}><div class="body">
+    return `<div class="msg u editing"${idxAttr}><div class="body">
       ${imgHtml}
       <div class="inline-editor">
         <textarea data-role="editText" rows="1" aria-label="修改消息">${esc(m.text || "")}</textarea>
         <div class="editor-actions">
-          <button type="button" data-act="cancelEdit" data-idx="${opts.idx}">取消</button>
+          <button type="button" class="attach" data-act="editAttach" data-idx="${opts.idx}" title="加图片" aria-label="加图片">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.6 12.7 20.3a5 5 0 0 1-7.1-7.1l8.5-8.5a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.8 1.8 0 0 1-2.5-2.5l7.8-7.8"/></svg>
+          </button>
+          <button type="button" class="cancel" data-act="cancelEdit" data-idx="${opts.idx}">取消</button>
           <button type="button" class="primary" data-act="sendEdit" data-idx="${opts.idx}">发送</button>
         </div>
       </div>
@@ -1752,9 +1817,11 @@ function msgNode(m, opts = {}) {
   </div></div>`;
 }
 
-function renderStream() {
+function renderStream(opts = {}) {
   const el = $("#stream");
   const total = S.msgs.length;
+  const keepScroll = !!opts.keepScroll;
+  const prevTop = keepScroll ? el.scrollTop : 0;
 
   if (!total) {
     el.innerHTML = `<div class="empty-chat">
@@ -1785,7 +1852,7 @@ function renderStream() {
       ? { index: S.branchIdx, count: S.branches.length } : null,
   })).join("");
   el.innerHTML = html;
-  el.scrollTop = el.scrollHeight;
+  el.scrollTop = keepScroll ? prevTop : el.scrollHeight;
   hydrateImages(el);
   renderMath(el);
   buildMiniTicks();
