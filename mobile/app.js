@@ -1309,8 +1309,14 @@ async function onMsgAction(e) {
       document.execCommand("copy");
       ta.remove();
     }
-    b.textContent = "已复制";
-    setTimeout(() => { if (b.isConnected) b.textContent = "复制"; }, 1500);
+    if (b.classList.contains("iact")) {
+      b.classList.add("done");
+      b.title = "已复制";
+      setTimeout(() => { if (b.isConnected) { b.classList.remove("done"); b.title = "复制"; } }, 1500);
+    } else {
+      b.textContent = "已复制";
+      setTimeout(() => { if (b.isConnected) b.textContent = "复制"; }, 1500);
+    }
     return;
   }
 
@@ -1645,14 +1651,24 @@ function msgNode(m, opts = {}) {
         <button type="button" data-act="nextBranch" data-idx="${opts.idx}" aria-label="下一个版本">›</button>
       </div>` : "";
   const acts = typeof opts.idx === "number"
-    ? `<div class="mact">
-        <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
-        ${u ? "" : `<button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>`}
-        <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
-        ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
-        ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
-        ${opts.canFork ? `<button type="button" data-act="fork" data-idx="${opts.idx}">从这条重说</button>` : ""}
-       </div>` : "";
+    ? u
+      ? `<div class="mact uacts">
+          <button type="button" class="iact" data-act="copy" data-idx="${opts.idx}" title="复制" aria-label="复制">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          </button>
+          ${opts.canFork ? `<button type="button" class="iact primary" data-act="fork" data-idx="${opts.idx}" title="修改这条并重新说" aria-label="修改重说">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
+          </button>` : ""}
+          <button type="button" class="miniact" data-act="del" data-idx="${opts.idx}">删除</button>
+        </div>`
+      : `<div class="mact">
+          <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
+          <button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>
+          <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
+          ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
+          ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
+        </div>`
+    : "";
   return `<div class="msg ${u ? "u" : ""}" ${typeof opts.idx === "number" ? `data-idx="${opts.idx}"` : ""}><div class="body">
     ${think}
     <div class="text">${md(m.text)}</div>
@@ -1691,7 +1707,7 @@ function renderStream() {
     idx: start + i,
     canRegen: start + i === total - 1 && m.role !== "user",
     canContinue: start + i === total - 1 && canContinueMsg(m),
-    canFork: m.role === "user" && (start + i < total - 1 || !!(m.images && m.images.length)),
+    canFork: m.role === "user",
     branch: start + i === total - 1 && S.branches.length > 1
       ? { index: S.branchIdx, count: S.branches.length } : null,
   })).join("");

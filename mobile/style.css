@@ -232,6 +232,13 @@ textarea{flex:1;border:0;background:none;resize:none;outline:none;font:inherit;l
 .mact button{font-size:10.5px;color:#a7a39b;border:0;background:none;padding:2px 5px;border-radius:5px}
 .mact button:active{background:#eae6de;color:#5f5b54}
 .msg.u .mact{justify-content:flex-end}
+.mact.uacts{gap:10px;align-items:center}
+.iact{width:30px;height:30px;padding:0;border:1px solid var(--line2);border-radius:9px;
+  background:var(--card);color:var(--muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.iact svg{width:16px;height:16px}
+.iact.primary{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.iact:hover,.iact.done{border-color:var(--accent);color:var(--accent)}
+.miniact{font-size:10.5px;color:var(--faint);border:0;background:none;padding:2px 5px;border-radius:5px;cursor:pointer}
 .cites{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:9px}
 .cites span{font-size:10.5px;color:#a7a39b}
 .cites a{font-size:11px;color:var(--accent);background:var(--accent-soft);border-radius:6px;
