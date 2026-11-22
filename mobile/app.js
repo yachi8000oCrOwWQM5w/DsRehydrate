@@ -201,7 +201,7 @@ const S = {
   zip: null, rows: [], busy: false, ctrl: null,
   urls: new Map(), showFrom: null, pending: [],
   chats: [], activeId: null,
-  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null,
+  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null, editDraft: "",
 };
 const $ = (s) => document.querySelector(s);
 function applyFont() {
@@ -1356,7 +1356,26 @@ async function onMsgAction(e) {
   }
 
   if (act === "fork") {
-    await forkFrom(idx);
+    if (S.busy || m.role !== "user") return;
+    S.editIdx = idx;
+    S.editDraft = m.text || "";
+    renderStream();
+    requestAnimationFrame(() => {
+      const ta = $("#stream [data-role=editText]");
+      if (ta) { ta.focus(); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 202) + "px"; }
+    });
+    return;
+  }
+
+  if (act === "cancelEdit") {
+    S.editIdx = null;
+    S.editDraft = "";
+    renderStream();
+    return;
+  }
+
+  if (act === "sendEdit") {
+    await sendEdit(idx);
     return;
   }
 
@@ -1381,31 +1400,61 @@ async function continueGeneration(idx) {
   await runStream(S.msgs[userIdx].text || "", imgs, { prefixIdx: idx });
 }
 
-async function forkFrom(idx) {
+async function forkFrom(idx, editedText = null) {
   if (S.busy) return;
   const m = S.msgs[idx];
   if (!m || m.role !== "user") return;
   ensureBranches();
   S.branches[S.branchIdx] = S.msgs;
+  S.branches[S.branchIdx][idx].branchAnchor = true;
   const prefix = S.msgs.slice(0, idx + 1).map((x) => ({ ...x }));
+  prefix[idx].text = editedText == null ? (m.text || "") : editedText;
+  prefix[idx].ts = Math.floor(Date.now() / 1000);
+  prefix[idx].branchAnchor = true;
   S.branches.push(prefix);
   S.branchIdx = S.branches.length - 1;
   S.editIdx = null;
+  S.editDraft = "";
   S.msgs = S.branches[S.branchIdx];
   await saveActiveMsgs();
   S.showFrom = null;
   renderStream();
-  const ta = $("#input");
-  S.editIdx = idx;
-  if (ta) {
-    ta.value = m.text || "";
-    ta.dispatchEvent(new Event("input", { bubbles: true }));
-    ta.focus({ preventScroll: true });
+  const imgs = await imagesFromIds(prefix[idx].images);
+  await runStream(prefix[idx].text, imgs);
+}
+
+async function sendEdit(idx) {
+  if (S.busy) return;
+  const m = S.msgs[idx];
+  if (!m || m.role !== "user") return;
+  const text = String(S.editDraft || "").trim();
+  if (!text) return;
+  S.editIdx = null;
+  S.editDraft = "";
+  await forkFrom(idx, text);
+}
+
+function onMsgInput(e) {
+  const ta = e.target.closest('[data-role="editText"]');
+  if (!ta) return;
+  S.editDraft = ta.value;
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 202) + "px";
+}
+
+function onMsgKeydown(e) {
+  const ta = e.target.closest('[data-role="editText"]');
+  if (!ta) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    S.editIdx = null;
+    S.editDraft = "";
+    renderStream();
+    return;
   }
-  const meta = $("#cmeta");
-  if (meta) {
-    meta.textContent = `已新建版本 ${S.branchIdx + 1}/${S.branches.length}，改完直接发送；点版本条左右箭头可切换`;
-    setTimeout(() => { if (meta.textContent.includes("已新建版本")) meta.textContent = ""; }, 6000);
+  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    e.preventDefault();
+    void sendEdit(Number(ta.closest(".msg")?.dataset.idx));
   }
 }
 
@@ -1416,6 +1465,7 @@ async function switchBranch(delta) {
   S.branches[S.branchIdx] = S.msgs;
   S.branchIdx = (S.branchIdx + delta + S.branches.length) % S.branches.length;
   S.editIdx = null;
+  S.editDraft = "";
   S.msgs = S.branches[S.branchIdx];
   S.showFrom = null;
   await saveActiveMsgs();
@@ -1558,6 +1608,8 @@ function renderChat() {
   $("#btnTimeline").onclick = openTimeline;
   $("#btnChats").onclick = () => openChatList();
   $("#stream").addEventListener("click", onMsgAction);
+  $("#stream").addEventListener("input", onMsgInput);
+  $("#stream").addEventListener("keydown", onMsgKeydown);
   $("#btnMenu").onclick = () => openChatList();
   $("#btnSearch").onclick = () => openMessageSearch();
   $("#btnNewTop").onclick = () => {
@@ -1636,7 +1688,23 @@ function renderMath(root) {
 
 function msgNode(m, opts = {}) {
   const u = m.role === "user";
+  const idxAttr = typeof opts.idx === "number" ? ` data-idx="${opts.idx}"` : "";
   const imgs = (m.images || []).map((id) => `<img data-f="${id}" alt="" loading="lazy" decoding="async">`).join("");
+  const imgHtml = imgs ? `<div class="imgs">${imgs}</div>` : "";
+
+  if (u && opts.editing) {
+    return `<div class="msg u"${idxAttr}><div class="body">
+      ${imgHtml}
+      <div class="inline-editor">
+        <textarea data-role="editText" rows="1" aria-label="修改消息">${esc(m.text || "")}</textarea>
+        <div class="editor-actions">
+          <button type="button" data-act="cancelEdit" data-idx="${opts.idx}">取消</button>
+          <button type="button" class="primary" data-act="sendEdit" data-idx="${opts.idx}">发送</button>
+        </div>
+      </div>
+    </div></div>`;
+  }
+
   const think = m.reasoning
     ? `<details class="think"><summary>${esc(thinkingSummary(m))}</summary><div class="tb">${esc(m.reasoning)}</div></details>` : "";
   const cites = (m.cites || []).length
@@ -1645,6 +1713,7 @@ function msgNode(m, opts = {}) {
   const err = m.error ? errorNoticeHTML(m.error) : "";
   const filtered = (m.finishReason === "content_filter" || m.status === "refused")
     ? '<div class="notice warn" style="margin-top:8px">内容被过滤了，换个说法再试。</div>' : "";
+  const always = opts.alwaysShow ? " always" : "";
   const branchBar = opts.branch
     ? `<div class="branchbar"><span>版本 ${opts.branch.index + 1}/${opts.branch.count}</span>
         <button type="button" data-act="prevBranch" data-idx="${opts.idx}" aria-label="上一个版本">‹</button>
@@ -1652,16 +1721,16 @@ function msgNode(m, opts = {}) {
       </div>` : "";
   const acts = typeof opts.idx === "number"
     ? u
-      ? `<div class="mact uacts">
+      ? `<div class="mact uacts${always}">
           <button type="button" class="iact" data-act="copy" data-idx="${opts.idx}" title="复制" aria-label="复制">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
           </button>
-          ${opts.canFork ? `<button type="button" class="iact primary" data-act="fork" data-idx="${opts.idx}" title="修改这条并重新说" aria-label="修改重说">
+          ${opts.canFork ? `<button type="button" class="iact primary" data-act="fork" data-idx="${opts.idx}" title="修改" aria-label="修改">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
           </button>` : ""}
           <button type="button" class="miniact" data-act="del" data-idx="${opts.idx}">删除</button>
         </div>`
-      : `<div class="mact">
+      : `<div class="mact${always}">
           <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
           <button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>
           <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
@@ -1669,16 +1738,17 @@ function msgNode(m, opts = {}) {
           ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
         </div>`
     : "";
-  return `<div class="msg ${u ? "u" : ""}" ${typeof opts.idx === "number" ? `data-idx="${opts.idx}"` : ""}><div class="body">
+  const bottom = u && (acts || branchBar)
+    ? `<div class="ubottom">${acts}${branchBar}</div>` : (acts || branchBar);
+  return `<div class="msg ${u ? "u" : ""}"${idxAttr}><div class="body">
     ${think}
     <div class="text">${md(m.text)}</div>
-    ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
+    ${imgHtml}
     ${cites}
     ${err}
     ${filtered}
     ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
-    ${branchBar}
-    ${acts}
+    ${bottom}
   </div></div>`;
 }
 
@@ -1707,8 +1777,11 @@ function renderStream() {
     idx: start + i,
     canRegen: start + i === total - 1 && m.role !== "user",
     canContinue: start + i === total - 1 && canContinueMsg(m),
-    canFork: m.role === "user",
-    branch: start + i === total - 1 && S.branches.length > 1
+    canFork: m.role === "user" && S.editIdx !== start + i,
+    editing: S.editIdx === start + i,
+    alwaysShow: (m.role === "user" && (start + i === total - 1 || start + i === total - 2))
+      || (m.role !== "user" && start + i === total - 1),
+    branch: m.role === "user" && m.branchAnchor && S.branches.length > 1
       ? { index: S.branchIdx, count: S.branches.length } : null,
   })).join("");
   el.innerHTML = html;
@@ -1813,19 +1886,8 @@ async function send() {
     userMsg.images.push(id);
   }
 
-  const editIdx = S.editIdx;
-  S.editIdx = null;
-  const target = typeof editIdx === "number" ? S.msgs[editIdx] : null;
-  if (target && target.role === "user") {
-    target.text = text;
-    target.ts = userMsg.ts;
-    target.images = [...(target.images || []), ...userMsg.images];
-    const textEl = $("#stream").querySelector(`.msg[data-idx="${editIdx}"] .text`);
-    if (textEl) { textEl.innerHTML = md(text); renderMath(textEl); }
-  } else {
-    S.msgs.push(userMsg);
-    appendNode(msgNode(userMsg));
-  }
+  S.msgs.push(userMsg);
+  appendNode(msgNode(userMsg));
   await runStream(text, imgs);
 }
 
@@ -2313,6 +2375,7 @@ async function exportZip() {
           result.push({
             role: m.role, text: m.text, ts: m.ts || 0,
             reasoning: m.reasoning || "", images: imgs,
+            branchAnchor: !!m.branchAnchor,
           });
         }
         return result;
@@ -2380,6 +2443,7 @@ async function importOwnZip(zip, maniEntry) {
       msgs.push({
         role: m.role, text: m.text, ts: m.ts || 0,
         reasoning: m.reasoning || "", images: ids,
+        branchAnchor: !!m.branchAnchor,
       });
     }
     list.push({
@@ -2393,6 +2457,7 @@ async function importOwnZip(zip, maniEntry) {
           role: bm.role, text: bm.text, ts: bm.ts || 0,
           reasoning: bm.reasoning || "",
           images: (bm.images || []).map((fname) => fileIds.get(fname)).filter(Boolean),
+          branchAnchor: !!bm.branchAnchor,
         })))
       : [msgs];
     await kvSet(branchesKey(id), branches);
