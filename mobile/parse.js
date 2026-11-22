@@ -161,12 +161,19 @@ export function packAll(chats, cfg) {
       search: !!cfg?.search,
       enterSend: cfg?.enterSend !== false,
     },
-    chats: (chats || []).map((c) => ({
-      name: c.name || "未命名",
-      persona: c.persona || "",
-      anchors: c.anchors || "",
-      msgs: cleanMsgs(c.msgs),
-    })),
+    chats: (chats || []).map((c) => {
+      const branches = Array.isArray(c.branches) && c.branches.length
+        ? c.branches.map(cleanMsgs)
+        : [cleanMsgs(c.msgs)];
+      const branchIdx = Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1));
+      return {
+        name: c.name || "未命名",
+        persona: c.persona || "",
+        anchors: c.anchors || "",
+        msgs: branches[branchIdx] || [],
+        branches, branchIdx,
+      };
+    }),
     files: {},
   };
 }
@@ -176,12 +183,19 @@ export function unpack(json) {
   if (json.v >= 2 && Array.isArray(json.chats)) {
     return {
       cfg: json.cfg || {},
-      chats: json.chats.map((c) => ({
-        name: c.name || "未命名",
-        persona: c.persona || "",
-        anchors: c.anchors || "",
-        msgs: cleanMsgs(c.msgs),
-      })),
+      chats: json.chats.map((c) => {
+        const branches = Array.isArray(c.branches) && c.branches.length
+          ? c.branches.map(cleanMsgs)
+          : [cleanMsgs(c.msgs)];
+        const branchIdx = Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1));
+        return {
+          name: c.name || "未命名",
+          persona: c.persona || "",
+          anchors: c.anchors || "",
+          msgs: branches[branchIdx] || [],
+          branches, branchIdx,
+        };
+      }),
       files: json.files || {},
     };
   }
@@ -193,6 +207,8 @@ export function unpack(json) {
       persona: json.char?.persona || "",
       anchors: json.char?.anchors || "",
       msgs: cleanMsgs(json.msgs),
+      branches: [cleanMsgs(json.msgs)],
+      branchIdx: 0,
     }],
     files: json.files || {},
   };

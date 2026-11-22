@@ -478,3 +478,9 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,.screen::-webkit-scrollbar,.stre
 /* 数据操作状态 */
 .hint.ok{color:var(--accent)}
 .hint.bad{color:#b34a43}
+
+/* 对话版本分叉 */
+.branchbar{display:flex;align-items:center;gap:6px;margin:6px 0 0;color:var(--muted);font-size:12px}
+.branchbar button{width:24px;height:22px;border:1px solid var(--line2);border-radius:6px;background:var(--card);
+  color:var(--accent);font-size:16px;line-height:1;padding:0;cursor:pointer}
+.branchbar button:hover{border-color:var(--accent)}

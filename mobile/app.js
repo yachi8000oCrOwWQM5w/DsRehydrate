@@ -43,6 +43,17 @@ async function kvSet(k, v) {
     t.onerror = () => rej(t.error);
   });
 }
+async function kvDel(k) {
+  if (MEM) { MEM.delete(k); return; }
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction("kv", "readwrite");
+    t.objectStore("kv").delete(k);
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+
 async function filePut(rec) {
   if (MEM) { MEM.set("file:" + rec.id, rec); return; }
   const d = await db();
@@ -91,6 +102,13 @@ async function wipe() {
 const CHATS_KEY = "chats";
 const ACTIVE_KEY = "active";
 const msgsKey = (id) => "msgs:" + id;
+const branchesKey = (id) => "branches:" + id;
+const branchKey = (id) => "branch:" + id;
+
+function ensureBranches() {
+  if (!Array.isArray(S.branches) || !S.branches.length) S.branches = [S.msgs];
+  if (!S.branches[S.branchIdx]) S.branches[S.branchIdx] = S.msgs;
+}
 
 async function persistChats() {
   await kvSet(CHATS_KEY, S.chats.map((c) => ({
@@ -101,7 +119,10 @@ async function persistChats() {
 
 async function saveActiveMsgs() {
   if (!S.activeId) return;
+  ensureBranches();
   await kvSet(msgsKey(S.activeId), S.msgs);
+  await kvSet(branchesKey(S.activeId), S.branches);
+  await kvSet(branchKey(S.activeId), S.branchIdx);
   const c = S.chats.find((x) => x.id === S.activeId);
   if (c) {
     c.count = S.msgs.length;
@@ -121,8 +142,13 @@ async function switchChat(id) {
   if (!c) return;
   saveCurrentDraft();
   S.activeId = id;
+  S.editIdx = null;
   S.char = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors };
   S.msgs = (await kvGet(msgsKey(id))) || [];
+  const stored = await kvGet(branchesKey(id));
+  S.branches = Array.isArray(stored) && stored.length ? stored : [S.msgs];
+  S.branchIdx = Math.max(0, Math.min(Number(await kvGet(branchKey(id))) || 0, S.branches.length - 1));
+  S.msgs = S.branches[S.branchIdx] || [];
   S.showFrom = null;
   S.urls.clear();
   await kvSet(ACTIVE_KEY, id);
@@ -135,6 +161,8 @@ async function createChat(name) {
   S.chats.unshift(c);
   await persistChats();
   await kvSet(msgsKey(id), []);
+  await kvSet(branchesKey(id), [[]]);
+  await kvSet(branchKey(id), 0);
   await switchChat(id);
   return c;
 }
@@ -142,6 +170,8 @@ async function createChat(name) {
 async function deleteChat(id) {
   S.drafts.delete(id);
   // 顺带清掉这段对话引用的图片，不然库会越用越大
+  await kvDel(branchesKey(id)).catch(() => {});
+  await kvDel(branchKey(id)).catch(() => {});
   const msgs = (await kvGet(msgsKey(id)).catch(() => null)) || [];
   for (const m of msgs) {
     for (const fid of m.images || []) await fileDel(fid).catch(() => {});
@@ -171,7 +201,7 @@ const S = {
   zip: null, rows: [], busy: false, ctrl: null,
   urls: new Map(), showFrom: null, pending: [],
   chats: [], activeId: null,
-  drafts: new Map(),
+  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null,
 };
 const $ = (s) => document.querySelector(s);
 function applyFont() {
@@ -389,6 +419,10 @@ async function boot() {
       S.activeId = cur.id;
       S.char = { id: cur.id, name: cur.name, persona: cur.persona, anchors: cur.anchors };
       S.msgs = (await kvGet(msgsKey(cur.id))) || [];
+      const storedBranches = await kvGet(branchesKey(cur.id));
+      S.branches = Array.isArray(storedBranches) && storedBranches.length ? storedBranches : [S.msgs];
+      S.branchIdx = Math.max(0, Math.min(Number(await kvGet(branchKey(cur.id))) || 0, S.branches.length - 1));
+      S.msgs = S.branches[S.branchIdx] || [];
     }
   } catch {
     MEM = new Map();
@@ -1312,6 +1346,21 @@ async function onMsgAction(e) {
 
   if (act === "continue") {
     await continueGeneration(idx);
+    return;
+  }
+
+  if (act === "fork") {
+    await forkFrom(idx);
+    return;
+  }
+
+  if (act === "prevBranch") {
+    await switchBranch(-1);
+    return;
+  }
+
+  if (act === "nextBranch") {
+    await switchBranch(1);
   }
 }
 
@@ -1324,6 +1373,47 @@ async function continueGeneration(idx) {
   if (userIdx < 0) return;
   const imgs = await imagesFromIds(S.msgs[userIdx].images);
   await runStream(S.msgs[userIdx].text || "", imgs, { prefixIdx: idx });
+}
+
+async function forkFrom(idx) {
+  if (S.busy) return;
+  const m = S.msgs[idx];
+  if (!m || m.role !== "user") return;
+  ensureBranches();
+  S.branches[S.branchIdx] = S.msgs;
+  const prefix = S.msgs.slice(0, idx + 1).map((x) => ({ ...x }));
+  S.branches.push(prefix);
+  S.branchIdx = S.branches.length - 1;
+  S.editIdx = null;
+  S.msgs = S.branches[S.branchIdx];
+  await saveActiveMsgs();
+  S.showFrom = null;
+  renderStream();
+  const ta = $("#input");
+  S.editIdx = idx;
+  if (ta) {
+    ta.value = m.text || "";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    ta.focus({ preventScroll: true });
+  }
+  const meta = $("#cmeta");
+  if (meta) {
+    meta.textContent = `已新建版本 ${S.branchIdx + 1}/${S.branches.length}，改完直接发送；点版本条左右箭头可切换`;
+    setTimeout(() => { if (meta.textContent.includes("已新建版本")) meta.textContent = ""; }, 6000);
+  }
+}
+
+async function switchBranch(delta) {
+  if (S.busy) return;
+  ensureBranches();
+  if (S.branches.length < 2) return;
+  S.branches[S.branchIdx] = S.msgs;
+  S.branchIdx = (S.branchIdx + delta + S.branches.length) % S.branches.length;
+  S.editIdx = null;
+  S.msgs = S.branches[S.branchIdx];
+  S.showFrom = null;
+  await saveActiveMsgs();
+  renderStream();
 }
 
 
@@ -1549,6 +1639,11 @@ function msgNode(m, opts = {}) {
   const err = m.error ? errorNoticeHTML(m.error) : "";
   const filtered = (m.finishReason === "content_filter" || m.status === "refused")
     ? '<div class="notice warn" style="margin-top:8px">内容被过滤了，换个说法再试。</div>' : "";
+  const branchBar = opts.branch
+    ? `<div class="branchbar"><span>版本 ${opts.branch.index + 1}/${opts.branch.count}</span>
+        <button type="button" data-act="prevBranch" data-idx="${opts.idx}" aria-label="上一个版本">‹</button>
+        <button type="button" data-act="nextBranch" data-idx="${opts.idx}" aria-label="下一个版本">›</button>
+      </div>` : "";
   const acts = typeof opts.idx === "number"
     ? `<div class="mact">
         <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
@@ -1556,6 +1651,7 @@ function msgNode(m, opts = {}) {
         <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
         ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
         ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
+        ${opts.canFork ? `<button type="button" data-act="fork" data-idx="${opts.idx}">从这条重说</button>` : ""}
        </div>` : "";
   return `<div class="msg ${u ? "u" : ""}" ${typeof opts.idx === "number" ? `data-idx="${opts.idx}"` : ""}><div class="body">
     ${think}
@@ -1565,6 +1661,7 @@ function msgNode(m, opts = {}) {
     ${err}
     ${filtered}
     ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
+    ${branchBar}
     ${acts}
   </div></div>`;
 }
@@ -1594,6 +1691,9 @@ function renderStream() {
     idx: start + i,
     canRegen: start + i === total - 1 && m.role !== "user",
     canContinue: start + i === total - 1 && canContinueMsg(m),
+    canFork: m.role === "user" && (start + i < total - 1 || !!(m.images && m.images.length)),
+    branch: start + i === total - 1 && S.branches.length > 1
+      ? { index: S.branchIdx, count: S.branches.length } : null,
   })).join("");
   el.innerHTML = html;
   el.scrollTop = el.scrollHeight;
@@ -1696,8 +1796,20 @@ async function send() {
     await filePut({ id, name: "image", blob: it.blob });
     userMsg.images.push(id);
   }
-  S.msgs.push(userMsg);
-  appendNode(msgNode(userMsg));
+
+  const editIdx = S.editIdx;
+  S.editIdx = null;
+  const target = typeof editIdx === "number" ? S.msgs[editIdx] : null;
+  if (target && target.role === "user") {
+    target.text = text;
+    target.ts = userMsg.ts;
+    target.images = [...(target.images || []), ...userMsg.images];
+    const textEl = $("#stream").querySelector(`.msg[data-idx="${editIdx}"] .text`);
+    if (textEl) { textEl.innerHTML = md(text); renderMath(textEl); }
+  } else {
+    S.msgs.push(userMsg);
+    appendNode(msgNode(userMsg));
+  }
   await runStream(text, imgs);
 }
 
@@ -2152,26 +2264,46 @@ async function exportZip() {
 
     for (const c of S.chats) {
       const msgs = c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id))) || []);
-      const out = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors, msgs: [] };
+      const out = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors, msgs: [], branches: [], branchIdx: 0 };
+      const chatBranches = c.id === S.activeId
+        ? S.branches
+        : ((await kvGet(branchesKey(c.id)).catch(() => null)) || []);
+      const sourceBranches = Array.isArray(chatBranches) && chatBranches.length ? chatBranches : [msgs];
+      out.branchIdx = c.id === S.activeId
+        ? S.branchIdx
+        : (Number(await kvGet(branchKey(c.id)).catch(() => 0)) || 0);
+      out.branchIdx = Math.max(0, Math.min(out.branchIdx, sourceBranches.length - 1));
 
-      for (const m of msgs) {
-        const imgs = [];
-        for (const fid of m.images || []) {
-          if (bytes > CAP) continue;
-          const rec = await fileGet(fid).catch(() => null);
-          if (!rec) continue;
-          const raw = new Uint8Array(await rec.blob.arrayBuffer());
-          const safe = (rec.name || "image").replace(/[^\w.\-\u4e00-\u9fa5]/g, "_").slice(0, 60);
-          const fname = fid + "_" + safe;
-          files.push({ name: `chat_sessions/${c.id}_files/${fname}`, bytes: raw });
-          bytes += raw.length;
-          imgs.push(fname);
+      const fileNames = new Map();
+      const exportBranch = async (branch) => {
+        const result = [];
+        for (const m of branch || []) {
+          const imgs = [];
+          for (const fid of m.images || []) {
+            let fname = fileNames.get(fid);
+            if (!fname) {
+              if (bytes > CAP) continue;
+              const rec = await fileGet(fid).catch(() => null);
+              if (!rec) continue;
+              const raw = new Uint8Array(await rec.blob.arrayBuffer());
+              const safe = (rec.name || "image").replace(/[^\w.\-\u4e00-\u9fa5]/g, "_").slice(0, 60);
+              fname = fid + "_" + safe;
+              files.push({ name: `chat_sessions/${c.id}_files/${fname}`, bytes: raw });
+              bytes += raw.length;
+              fileNames.set(fid, fname);
+            }
+            imgs.push(fname);
+          }
+          result.push({
+            role: m.role, text: m.text, ts: m.ts || 0,
+            reasoning: m.reasoning || "", images: imgs,
+          });
         }
-        out.msgs.push({
-          role: m.role, text: m.text, ts: m.ts || 0,
-          reasoning: m.reasoning || "", images: imgs,
-        });
-      }
+        return result;
+      };
+
+      for (const branch of sourceBranches) out.branches.push(await exportBranch(branch));
+      out.msgs = out.branches[out.branchIdx] || [];
       manifest.chats.push(out);
     }
 
@@ -2212,16 +2344,21 @@ async function importOwnZip(zip, maniEntry) {
   for (const c of chats) {
     const id = uid();
     const msgs = [];
+    const fileIds = new Map();
     for (const m of c.msgs || []) {
       const ids = [];
       for (const fname of m.images || []) {
-        const e = zip.entries.find((x) => x.name.endsWith("/" + fname));
-        if (!e) continue;
-        const raw = await zip.read(e);
-        const fid = uid();
-        const ext = (fname.split(".").pop() || "").toLowerCase();
-        const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
-        await filePut({ id: fid, name: fname, blob: new Blob([raw], { type: mime }) });
+        let fid = fileIds.get(fname);
+        if (!fid) {
+          const e = zip.entries.find((x) => x.name.endsWith("/" + fname));
+          if (!e) continue;
+          const raw = await zip.read(e);
+          fid = uid();
+          const ext = (fname.split(".").pop() || "").toLowerCase();
+          const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
+          await filePut({ id: fid, name: fname, blob: new Blob([raw], { type: mime }) });
+          fileIds.set(fname, fid);
+        }
         ids.push(fid);
       }
       msgs.push({
@@ -2235,6 +2372,15 @@ async function importOwnZip(zip, maniEntry) {
       last: (msgs[msgs.length - 1] || {}).text || "",
     });
     await kvSet(msgsKey(id), msgs);
+    const branches = Array.isArray(c.branches) && c.branches.length
+      ? c.branches.map((branch) => branch.map((bm, bi) => ({
+          role: bm.role, text: bm.text, ts: bm.ts || 0,
+          reasoning: bm.reasoning || "",
+          images: (bm.images || []).map((fname) => fileIds.get(fname)).filter(Boolean),
+        })))
+      : [msgs];
+    await kvSet(branchesKey(id), branches);
+    await kvSet(branchKey(id), Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1)));
   }
 
   await kvSet(CHATS_KEY, list);
@@ -2255,15 +2401,22 @@ async function exportData() {
   // 收集所有对话（当前这条在内存里，其余从库里读）
   const chats = [];
   for (const c of S.chats) {
+    const msgs = c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id))) || []);
+    const stored = c.id === S.activeId ? S.branches : ((await kvGet(branchesKey(c.id)).catch(() => null)) || []);
+    const branches = Array.isArray(stored) && stored.length ? stored : [msgs];
+    const branchIdx = Math.max(0, Math.min(
+      Number(c.id === S.activeId ? S.branchIdx : (await kvGet(branchKey(c.id)).catch(() => 0))) || 0,
+      branches.length - 1,
+    ));
     chats.push({
       name: c.name, persona: c.persona, anchors: c.anchors,
-      msgs: c.id === S.activeId ? S.msgs : ((await kvGet(msgsKey(c.id))) || []),
+      msgs: branches[branchIdx] || [], branches, branchIdx,
     });
   }
-  if (!chats.length) chats.push({ name: S.char?.name || "角色", persona: S.char?.persona || "", anchors: S.char?.anchors || "", msgs: S.msgs });
+  if (!chats.length) chats.push({ name: S.char?.name || "角色", persona: S.char?.persona || "", anchors: S.char?.anchors || "", msgs: S.msgs, branches: [S.msgs], branchIdx: 0 });
 
   const pack = packAll(chats, S.cfg);
-  const all = chats.flatMap((c) => c.msgs);
+  const all = chats.flatMap((c) => (c.branches || [c.msgs]).flat());
 
   if (withFiles) {
     let bytes = 0, n = 0;
@@ -2311,6 +2464,9 @@ async function importData() {
           last: (c.msgs[c.msgs.length - 1] || {}).text || "",
         });
         await kvSet(msgsKey(id), c.msgs);
+        const branches = Array.isArray(c.branches) && c.branches.length ? c.branches : [c.msgs];
+        await kvSet(branchesKey(id), branches);
+        await kvSet(branchKey(id), Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1)));
       }
       await kvSet(CHATS_KEY, list);
       await kvSet(ACTIVE_KEY, list[0] ? list[0].id : "");
