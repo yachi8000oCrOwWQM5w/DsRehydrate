@@ -1437,7 +1437,7 @@ async function onMsgAction(e) {
   }
 
   if (act === "regen") {
-    await regenerate();
+    await regenerate(idx);
     return;
   }
 
@@ -1513,6 +1513,7 @@ async function forkFrom(idx, editedText = null, extraImages = [], flags = null) 
   S.branches[S.branchIdx] = S.msgs;
   S.branches[S.branchIdx][idx].branchAnchor = true;
   const prefix = S.msgs.slice(0, idx + 1).map((x) => ({ ...x }));
+  prefix.forEach((x, j) => { if (j !== idx) x.branchAnchor = false; });
   prefix[idx].text = editedText == null ? (m.text || "") : editedText;
   if (editedText != null) prefix[idx].ts = Math.floor(Date.now() / 1000);
   prefix[idx].branchAnchor = true;
@@ -1904,7 +1905,7 @@ function renderStream(opts = {}) {
   }
   html += S.msgs.slice(start).map((m, i) => msgNode(m, {
     idx: start + i,
-    canRegen: start + i === total - 1 && m.role !== "user",
+    canRegen: m.role !== "user",
     canContinue: start + i === total - 1 && canContinueMsg(m),
     canFork: m.role === "user" && S.editIdx !== start + i,
     editing: S.editIdx === start + i,
@@ -1930,20 +1931,15 @@ function renderStream(opts = {}) {
   }
 }
 
-async function regenerate() {
+async function regenerate(idx = null) {
   if (S.busy) return;
-  const flags = {};
+  const from = typeof idx === "number" ? idx : S.msgs.length - 1;
+  const target = S.msgs[from];
+  if (!target || target.role === "user") return;
+  const flags = { thinkingOn: target.thinkingOn !== false, searchOn: !!target.searchOn };
   let userIdx = -1;
-  for (let i = S.msgs.length - 1; i >= 0; i--) {
-    const m = S.msgs[i];
-    if (m.role === "assistant") {
-      if (flags.thinkingOn === undefined) {
-        flags.thinkingOn = m.thinkingOn !== false;
-        flags.searchOn = !!m.searchOn;
-      }
-      continue;
-    }
-    if (m.role === "user") { userIdx = i; break; }
+  for (let i = from - 1; i >= 0; i--) {
+    if (S.msgs[i].role === "user") { userIdx = i; break; }
   }
   if (userIdx < 0) return;
   await forkFrom(userIdx, null, [], flags);
