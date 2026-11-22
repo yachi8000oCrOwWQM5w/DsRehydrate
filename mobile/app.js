@@ -352,6 +352,9 @@ function apiError(status, raw) {
   if (status === 402 || /insufficient|balance|余额|充值/i.test(message)) {
     return { status, message: "账户余额不足", action: "topUp" };
   }
+  if (status === 0 && /Failed to fetch|NetworkError|Load failed|network|timeout|cross-origin|CORS/i.test(message)) {
+    return { status, message: "连不上接口：检查网络、浏览器，或设置里的 API 地址", action: "apiKey" };
+  }
   if (status === 429) {
     return { status, message: "请求太频繁，稍后再试", action: "" };
   }
@@ -1386,10 +1389,16 @@ async function togglePill(which) {
 async function onMsgAction(e) {
   const b = e.target.closest("button[data-act]");
   if (!b) return;
+  const act = b.dataset.act;
+
+  if (act === "fixKey") {
+    openSettings();
+    return;
+  }
+
   const idx = Number(b.dataset.idx);
   const m = S.msgs[idx];
   if (!m) return;
-  const act = b.dataset.act;
 
   if (act === "copy") {
     try {
@@ -1431,11 +1440,6 @@ async function onMsgAction(e) {
     S.msgs.splice(idx, 1);
     await saveActiveMsgs();
     renderStream();
-    return;
-  }
-
-  if (act === "fixKey") {
-    openSettings();
     return;
   }
 
