@@ -192,6 +192,56 @@ async function switchChat(id) {
   renderChat();
 }
 
+async function branchChat(idx) {
+  if (S.busy) return;
+  const m = S.msgs[idx];
+  if (!m || m.role === "user") return;
+
+  const base = S.char?.name || "新对话";
+  const same = S.chats.filter((c) => c.name.startsWith(base + " · 分支")).length;
+  const name = `${base} · 分支 ${same + 1}`;
+  const id = uid();
+  const copied = [];
+  const fileMap = new Map();
+
+  for (const src of S.msgs.slice(0, idx + 1)) {
+    const images = [];
+    for (const fid of src.images || []) {
+      let newId = fileMap.get(fid);
+      if (!newId) {
+        const rec = await fileGet(fid).catch(() => null);
+        if (!rec) continue;
+        newId = uid();
+        await filePut({ id: newId, name: rec.name || fid, blob: rec.blob });
+        fileMap.set(fid, newId);
+      }
+      images.push(newId);
+    }
+    copied.push({ ...src, images });
+  }
+
+  const chat = {
+    id, name,
+    persona: S.char?.persona || "",
+    anchors: S.char?.anchors || "",
+    ts: Date.now(), count: copied.length,
+    last: (copied[copied.length - 1] || {}).text || "",
+  };
+  S.chats.unshift(chat);
+  await persistChats();
+  await kvSet(msgsKey(id), copied);
+  await kvSet(branchesKey(id), [copied]);
+  await kvSet(branchKey(id), 0);
+  await kvSet(branchCleanKey(id), 1);
+  await switchChat(id);
+
+  const meta = $("#cmeta");
+  if (meta) {
+    meta.textContent = `已新建分支对话：${name}`;
+    setTimeout(() => { if (meta.textContent.includes("已新建分支对话")) meta.textContent = ""; }, 6000);
+  }
+}
+
 async function createChat(name) {
   const id = uid();
   const c = { id, name: name || "新对话", persona: "", anchors: "", ts: Date.now(), count: 0, last: "" };
@@ -1367,8 +1417,9 @@ async function onMsgAction(e) {
     u.lang = "zh-CN";
     u.rate = 0.95;
     speechSynthesis.speak(u);
-    b.textContent = "停止";
-    u.onend = () => { if (b.isConnected) b.textContent = "朗读"; };
+    b.classList.add("done");
+    b.title = "停止朗读";
+    u.onend = () => { if (b.isConnected) { b.classList.remove("done"); b.title = "朗读"; } };
     return;
   }
 
@@ -1435,6 +1486,11 @@ async function onMsgAction(e) {
 
   if (act === "nextBranch") {
     await switchBranch(1);
+    return;
+  }
+
+  if (act === "branchChat") {
+    await branchChat(idx);
   }
 }
 
@@ -1748,6 +1804,16 @@ function renderMath(root) {
   } catch (_) {}
 }
 
+const ICON = {
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+  speak: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  regen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
+  cont: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>',
+  branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M8 17c6 0 4-8 8-8"/></svg>',
+};
+
 function msgNode(m, opts = {}) {
   const u = m.role === "user";
   const idxAttr = typeof opts.idx === "number" ? ` data-idx="${opts.idx}"` : "";
@@ -1787,20 +1853,17 @@ function msgNode(m, opts = {}) {
   const acts = typeof opts.idx === "number"
     ? u
       ? `<div class="mact uacts${always}">
-          <button type="button" class="iact" data-act="copy" data-idx="${opts.idx}" title="复制" aria-label="复制">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
-          </button>
-          ${opts.canFork ? `<button type="button" class="iact primary" data-act="fork" data-idx="${opts.idx}" title="修改" aria-label="修改">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
-          </button>` : ""}
-          <button type="button" class="miniact" data-act="del" data-idx="${opts.idx}">删除</button>
+          <button type="button" class="iact" data-act="copy" data-idx="${opts.idx}" title="复制" aria-label="复制">${ICON.copy}</button>
+          ${opts.canFork ? `<button type="button" class="iact" data-act="fork" data-idx="${opts.idx}" title="修改" aria-label="修改">${ICON.edit}</button>` : ""}
+          <button type="button" class="iact" data-act="del" data-idx="${opts.idx}" title="删除" aria-label="删除">${ICON.trash}</button>
         </div>`
-      : `<div class="mact${always}">
-          <button type="button" data-act="copy" data-idx="${opts.idx}">复制</button>
-          <button type="button" data-act="speak" data-idx="${opts.idx}">朗读</button>
-          <button type="button" data-act="del" data-idx="${opts.idx}">删除</button>
-          ${opts.canRegen ? `<button type="button" data-act="regen" data-idx="${opts.idx}">重新生成</button>` : ""}
-          ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
+      : `<div class="mact aacts${always}">
+          <button type="button" class="iact" data-act="copy" data-idx="${opts.idx}" title="复制" aria-label="复制">${ICON.copy}</button>
+          <button type="button" class="iact" data-act="speak" data-idx="${opts.idx}" title="朗读" aria-label="朗读">${ICON.speak}</button>
+          <button type="button" class="iact" data-act="del" data-idx="${opts.idx}" title="删除" aria-label="删除">${ICON.trash}</button>
+          ${opts.canRegen ? `<button type="button" class="iact" data-act="regen" data-idx="${opts.idx}" title="重新生成" aria-label="重新生成">${ICON.regen}</button>` : ""}
+          ${opts.canContinue ? `<button type="button" class="iact" data-act="continue" data-idx="${opts.idx}" title="继续生成" aria-label="继续生成">${ICON.cont}</button>` : ""}
+          <button type="button" class="chatbranch" data-act="branchChat" data-idx="${opts.idx}" title="从这条新建对话分支">${ICON.branch}<span>新增分支</span></button>
         </div>`
     : "";
   const bottom = acts || branchBar ? `<div class="ubottom">${acts}${branchBar}</div>` : "";
