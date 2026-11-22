@@ -257,12 +257,15 @@ async function createChat(name) {
 async function deleteChat(id) {
   S.drafts.delete(id);
   // 顺带清掉这段对话引用的图片，不然库会越用越大
+  const branches = (await kvGet(branchesKey(id)).catch(() => null)) || [];
   await kvDel(branchesKey(id)).catch(() => {});
   await kvDel(branchKey(id)).catch(() => {});
+  await kvDel(branchCleanKey(id)).catch(() => {});
   const msgs = (await kvGet(msgsKey(id)).catch(() => null)) || [];
-  for (const m of msgs) {
-    for (const fid of m.images || []) await fileDel(fid).catch(() => {});
-  }
+  const allMsgs = [...msgs, ...branches.flat()];
+  const fileIds = new Set();
+  for (const m of allMsgs) for (const fid of m.images || []) fileIds.add(fid);
+  for (const fid of fileIds) await fileDel(fid).catch(() => {});
   S.chats = S.chats.filter((c) => c.id !== id);
   await persistChats();
   await kvSet(msgsKey(id), []);
@@ -2550,25 +2553,26 @@ async function importOwnZip(zip, maniEntry) {
     const id = uid();
     const msgs = [];
     const fileIds = new Map();
+    const allNames = new Set();
+    for (const m of c.msgs || []) for (const fname of m.images || []) allNames.add(fname);
+    for (const branch of c.branches || []) {
+      for (const bm of branch || []) for (const fname of bm.images || []) allNames.add(fname);
+    }
+    for (const fname of allNames) {
+      const e = zip.entries.find((x) => x.name.endsWith("/" + fname));
+      if (!e || fileIds.has(fname)) continue;
+      const raw = await zip.read(e);
+      const fid = uid();
+      const ext = (fname.split(".").pop() || "").toLowerCase();
+      const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
+      await filePut({ id: fid, name: fname, blob: new Blob([raw], { type: mime }) });
+      fileIds.set(fname, fid);
+    }
+    const remapImages = (arr) => (arr || []).map((fname) => fileIds.get(fname)).filter(Boolean);
     for (const m of c.msgs || []) {
-      const ids = [];
-      for (const fname of m.images || []) {
-        let fid = fileIds.get(fname);
-        if (!fid) {
-          const e = zip.entries.find((x) => x.name.endsWith("/" + fname));
-          if (!e) continue;
-          const raw = await zip.read(e);
-          fid = uid();
-          const ext = (fname.split(".").pop() || "").toLowerCase();
-          const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
-          await filePut({ id: fid, name: fname, blob: new Blob([raw], { type: mime }) });
-          fileIds.set(fname, fid);
-        }
-        ids.push(fid);
-      }
       msgs.push({
         role: m.role, text: m.text, ts: m.ts || 0,
-        reasoning: m.reasoning || "", images: ids,
+        reasoning: m.reasoning || "", images: remapImages(m.images),
         branchAnchor: !!m.branchAnchor,
       });
     }
@@ -2582,12 +2586,13 @@ async function importOwnZip(zip, maniEntry) {
       ? c.branches.map((branch) => branch.map((bm, bi) => ({
           role: bm.role, text: bm.text, ts: bm.ts || 0,
           reasoning: bm.reasoning || "",
-          images: (bm.images || []).map((fname) => fileIds.get(fname)).filter(Boolean),
+          images: remapImages(bm.images),
           branchAnchor: !!bm.branchAnchor,
         })))
       : [msgs];
     await kvSet(branchesKey(id), branches);
     await kvSet(branchKey(id), Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1)));
+    await kvSet(branchCleanKey(id), 1);
   }
 
   await kvSet(CHATS_KEY, list);
@@ -2674,6 +2679,7 @@ async function importData() {
         const branches = Array.isArray(c.branches) && c.branches.length ? c.branches : [c.msgs];
         await kvSet(branchesKey(id), branches);
         await kvSet(branchKey(id), Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1)));
+        await kvSet(branchCleanKey(id), 1);
       }
       await kvSet(CHATS_KEY, list);
       await kvSet(ACTIVE_KEY, list[0] ? list[0].id : "");
