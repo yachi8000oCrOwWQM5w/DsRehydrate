@@ -1505,7 +1505,7 @@ async function continueGeneration(idx) {
   await runStream(S.msgs[userIdx].text || "", imgs, { prefixIdx: idx });
 }
 
-async function forkFrom(idx, editedText = null, extraImages = []) {
+async function forkFrom(idx, editedText = null, extraImages = [], flags = null) {
   if (S.busy) return;
   const m = S.msgs[idx];
   if (!m || m.role !== "user") return;
@@ -1514,7 +1514,7 @@ async function forkFrom(idx, editedText = null, extraImages = []) {
   S.branches[S.branchIdx][idx].branchAnchor = true;
   const prefix = S.msgs.slice(0, idx + 1).map((x) => ({ ...x }));
   prefix[idx].text = editedText == null ? (m.text || "") : editedText;
-  prefix[idx].ts = Math.floor(Date.now() / 1000);
+  if (editedText != null) prefix[idx].ts = Math.floor(Date.now() / 1000);
   prefix[idx].branchAnchor = true;
   for (const it of extraImages || []) {
     const id = uid();
@@ -1530,7 +1530,7 @@ async function forkFrom(idx, editedText = null, extraImages = []) {
   S.showFrom = null;
   renderStream({ keepScroll: true });
   const imgs = await imagesFromIds(prefix[idx].images);
-  await runStream(prefix[idx].text, imgs);
+  await runStream(prefix[idx].text, imgs, flags || {});
 }
 
 async function sendEdit(idx) {
@@ -1933,19 +1933,20 @@ function renderStream(opts = {}) {
 async function regenerate() {
   if (S.busy) return;
   const flags = {};
+  let userIdx = -1;
   for (let i = S.msgs.length - 1; i >= 0; i--) {
-    if (S.msgs[i].role === "assistant") {
-      flags.thinkingOn = S.msgs[i].thinkingOn !== false;
-      flags.searchOn = !!S.msgs[i].searchOn;
-      break;
+    const m = S.msgs[i];
+    if (m.role === "assistant") {
+      if (flags.thinkingOn === undefined) {
+        flags.thinkingOn = m.thinkingOn !== false;
+        flags.searchOn = !!m.searchOn;
+      }
+      continue;
     }
+    if (m.role === "user") { userIdx = i; break; }
   }
-  while (S.msgs.length && S.msgs[S.msgs.length - 1].role !== "user") S.msgs.pop();
-  if (!S.msgs.length) return;
-  const lastUser = S.msgs[S.msgs.length - 1];
-  await saveActiveMsgs();
-  renderStream();
-  await runStream(lastUser.text, [], flags);
+  if (userIdx < 0) return;
+  await forkFrom(userIdx, null, [], flags);
 }
 
 async function pickImage() {
