@@ -1803,18 +1803,17 @@ function msgNode(m, opts = {}) {
           ${opts.canContinue ? `<button type="button" data-act="continue" data-idx="${opts.idx}">继续生成</button>` : ""}
         </div>`
     : "";
-  const bottom = u && (acts || branchBar)
-    ? `<div class="ubottom">${acts}${branchBar}</div>` : (acts || branchBar);
-  return `<div class="msg ${u ? "u" : ""}"${idxAttr}><div class="body">
-    ${think}
+  const bottom = acts || branchBar ? `<div class="ubottom">${acts}${branchBar}</div>` : "";
+  const inner = `${think}
     <div class="text">${md(m.text)}</div>
     ${imgHtml}
     ${cites}
     ${err}
     ${filtered}
-    ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}
-    ${bottom}
-  </div></div>`;
+    ${m.ts ? `<div class="meta"><span>${fmtTime(m.ts)}</span></div>` : ""}`;
+  return u
+    ? `<div class="msg u"${idxAttr}><div class="body">${inner}</div>${bottom}</div>`
+    : `<div class="msg"${idxAttr}><div class="body">${inner}${acts}</div></div>`;
 }
 
 function renderStream(opts = {}) {
