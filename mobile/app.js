@@ -1,5 +1,5 @@
 import { openZip } from "./zip.js";
-import { isSessionJson, parseSession, buildSystem, pickHistory, packAll, unpack, parseText } from "./parse.js";
+import { isSessionJson, parseSession, buildSystem, pickHistory, packAll, unpack, parseText, cleanMsgs } from "./parse.js";
 import { gatePassed, tryUrlCode, renderGate } from "./gate.js";
 import { makeZip } from "./zipwrite.js";
 
@@ -174,9 +174,12 @@ async function saveActiveMsgs() {
 async function switchChat(id) {
   const c = S.chats.find((x) => x.id === id);
   if (!c) return;
+  if (S.busy) S.ctrl?.abort();
   saveCurrentDraft();
+  resetEditState(false);
   S.activeId = id;
-  S.editIdx = null;
+  S.pending = (S.pendings.get(id) || []).slice();
+  renderPending?.();
   S.char = { id: c.id, name: c.name, persona: c.persona, anchors: c.anchors };
   S.msgs = (await kvGet(msgsKey(id))) || [];
   const stored = await kvGet(branchesKey(id));
@@ -255,8 +258,11 @@ async function createChat(name) {
 }
 
 async function deleteChat(id) {
+  if (S.busy && S.activeId === id) S.ctrl?.abort();
   S.drafts.delete(id);
-  // 顺带清掉这段对话引用的图片，不然库会越用越大
+  S.pendings.delete(id);
+  if (S.activeId === id) { resetEditState(true); S.pending = []; renderPending?.(); }
+  // 顺带清掉这段对话引用的图片，但不能误删其他对话还在用的图
   const branches = (await kvGet(branchesKey(id)).catch(() => null)) || [];
   await kvDel(branchesKey(id)).catch(() => {});
   await kvDel(branchKey(id)).catch(() => {});
@@ -265,7 +271,20 @@ async function deleteChat(id) {
   const allMsgs = [...msgs, ...branches.flat()];
   const fileIds = new Set();
   for (const m of allMsgs) for (const fid of m.images || []) fileIds.add(fid);
-  for (const fid of fileIds) await fileDel(fid).catch(() => {});
+  const usedElsewhere = new Set();
+  for (const other of S.chats) {
+    if (other.id === id) continue;
+    const om = (await kvGet(msgsKey(other.id)).catch(() => null)) || [];
+    const ob = (await kvGet(branchesKey(other.id)).catch(() => null)) || [];
+    for (const m of [...om, ...ob.flat()]) {
+      for (const fid of m.images || []) usedElsewhere.add(fid);
+    }
+  }
+  for (const fid of fileIds) {
+    if (usedElsewhere.has(fid)) continue;
+    await fileDel(fid).catch(() => {});
+    S.urls.delete(fid);
+  }
   S.chats = S.chats.filter((c) => c.id !== id);
   await persistChats();
   await kvSet(msgsKey(id), []);
@@ -291,7 +310,8 @@ const S = {
   zip: null, rows: [], busy: false, ctrl: null,
   urls: new Map(), showFrom: null, pending: [],
   chats: [], activeId: null,
-  drafts: new Map(), branches: [], branchIdx: 0, editIdx: null, editDraft: "", editPendingStart: null,
+  drafts: new Map(), pendings: new Map(), branches: [], branchIdx: 0,
+  editIdx: null, editDraft: "", editPendingStart: null,
 };
 const $ = (s) => document.querySelector(s);
 function applyFont() {
@@ -301,12 +321,22 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 const draftKey = () => S.activeId || "new";
 
+function resetEditState(splicePending = true) {
+  if (splicePending && typeof S.editPendingStart === "number") {
+    S.pending.splice(S.editPendingStart);
+  }
+  S.editIdx = null;
+  S.editDraft = "";
+  S.editPendingStart = null;
+}
+
 function saveCurrentDraft() {
   const ta = $("#input");
   if (!ta) return;
   const key = draftKey();
   if (ta.value) S.drafts.set(key, ta.value);
   else S.drafts.delete(key);
+  S.pendings.set(key, S.pending.slice());
 }
 
 function blobToDataUrl(blob) {
@@ -1437,7 +1467,12 @@ async function onMsgAction(e) {
 
   if (act === "del") {
     if (!confirm("删掉这条消息？")) return;
+    const wasAnchor = !!m.branchAnchor;
     S.msgs.splice(idx, 1);
+    if (wasAnchor && S.branches.length > 1) {
+      const users = S.msgs.map((x, i) => (x.role === "user" ? i : -1)).filter((i) => i >= 0);
+      if (users.length) S.msgs[users[users.length - 1]].branchAnchor = true;
+    }
     await saveActiveMsgs();
     renderStream();
     return;
@@ -1531,8 +1566,8 @@ async function forkFrom(idx, editedText = null, extraImages = [], flags = null) 
   }
   S.branches.push(prefix);
   S.branchIdx = S.branches.length - 1;
-  S.editIdx = null;
-  S.editDraft = "";
+  resetEditState(true);
+  renderPending?.();
   S.msgs = S.branches[S.branchIdx];
   await saveActiveMsgs();
   S.showFrom = null;
@@ -1590,8 +1625,8 @@ async function switchBranch(delta) {
   if (S.branches.length < 2) return;
   S.branches[S.branchIdx] = S.msgs;
   S.branchIdx = (S.branchIdx + delta + S.branches.length) % S.branches.length;
-  S.editIdx = null;
-  S.editDraft = "";
+  resetEditState(true);
+  renderPending?.();
   S.msgs = S.branches[S.branchIdx];
   S.showFrom = null;
   await saveActiveMsgs();
@@ -1905,6 +1940,17 @@ function renderStream(opts = {}) {
   const batch = mobile ? 36 : 60;
   if (S.showFrom == null) S.showFrom = Math.max(0, total - batch);
   const start = Math.min(S.showFrom, total);
+  let anchorIdx = S.msgs.findIndex((x) => x.role === "user" && x.branchAnchor);
+  if (S.branches.length > 1) {
+    let visible = anchorIdx >= start ? anchorIdx : -1;
+    if (visible < 0) {
+      for (let i = start; i < total; i++) {
+        if (S.msgs[i].role === "user") { visible = i; break; }
+      }
+    }
+    if (visible < 0 && start < total) visible = start;
+    anchorIdx = visible;
+  }
 
   let html = "";
   if (start > 0) {
@@ -1918,7 +1964,7 @@ function renderStream(opts = {}) {
     editing: S.editIdx === start + i,
     alwaysShow: (m.role === "user" && (start + i === total - 1 || start + i === total - 2))
       || (m.role !== "user" && start + i === total - 1),
-    branch: m.role === "user" && m.branchAnchor && S.branches.length > 1
+    branch: S.branches.length > 1 && ((m.role === "user" && m.branchAnchor) || start + i === anchorIdx)
       ? { index: S.branchIdx, count: S.branches.length } : null,
   })).join("");
   el.innerHTML = html;
@@ -2021,6 +2067,7 @@ async function send() {
 
   S.msgs.push(userMsg);
   appendNode(msgNode(userMsg));
+  await saveActiveMsgs();
   await runStream(text, imgs);
 }
 
@@ -2033,6 +2080,8 @@ async function runStream(text, images = [], opts = {}) {
   const searchOn = typeof opts.searchOn === "boolean"
     ? opts.searchOn
     : (prefix ? !!prefix.searchOn : !!S.cfg.search);
+  const streamChatId = S.activeId;
+  const alive = () => S.activeId === streamChatId;
 
   let node, textEl, thinkEl, thinkBody;
   if (prefix) {
@@ -2087,6 +2136,7 @@ async function runStream(text, images = [], opts = {}) {
   };
 
   const saveReply = (status, err = null) => {
+    if (!alive()) return;
     const data = {
       role: "assistant",
       text: baseText + acc,
@@ -2229,27 +2279,36 @@ async function runStream(text, images = [], opts = {}) {
     if (reasoning && !thinkEnd) thinkEnd = Date.now();
     textEl.innerHTML = md(baseText + acc) || (finishReason === "content_filter" ? "（内容被过滤）" : "（空回复）");
     renderMath(textEl);
-    saveReply("done");
-    await saveActiveMsgs();
-    renderStream();
+    if (alive()) {
+      saveReply("done");
+      await saveActiveMsgs();
+      renderStream();
+    }
   } catch (e) {
+    if (!alive()) return;
     const abort = e.name === "AbortError";
     const info = abort ? null : (e.info || apiError(e.status || 0, e.message));
     if (abort && acc.trim()) {
-      saveReply("stopped");
-      await saveActiveMsgs();
-      renderStream();
+      if (alive()) {
+        saveReply("stopped");
+        await saveActiveMsgs();
+        renderStream();
+      }
     } else if (abort && prefix) {
-      Object.assign(S.msgs[prefixIdx], {
-        status: "stopped", finishReason: "stopped",
-        reasoning: reasoning.slice(0, 4000), thinkStart, thinkEnd,
-      });
-      await saveActiveMsgs();
-      renderStream();
+      if (alive()) {
+        Object.assign(S.msgs[prefixIdx], {
+          status: "stopped", finishReason: "stopped",
+          reasoning: reasoning.slice(0, 4000), thinkStart, thinkEnd,
+        });
+        await saveActiveMsgs();
+        renderStream();
+      }
     } else if (acc.trim() || prefix) {
-      saveReply("error", info);
-      await saveActiveMsgs();
-      renderStream();
+      if (alive()) {
+        saveReply("error", info);
+        await saveActiveMsgs();
+        renderStream();
+      }
     } else {
       node.querySelector(".body").insertAdjacentHTML("beforeend", errorNoticeHTML(info));
       textEl.innerHTML = "";
@@ -2505,11 +2564,7 @@ async function exportZip() {
             }
             imgs.push(fname);
           }
-          result.push({
-            role: m.role, text: m.text, ts: m.ts || 0,
-            reasoning: m.reasoning || "", images: imgs,
-            branchAnchor: !!m.branchAnchor,
-          });
+          result.push(cleanMsgs([{ ...m, images: imgs }])[0]);
         }
         return result;
       };
@@ -2574,11 +2629,7 @@ async function importOwnZip(zip, maniEntry) {
     }
     const remapImages = (arr) => (arr || []).map((fname) => fileIds.get(fname)).filter(Boolean);
     for (const m of c.msgs || []) {
-      msgs.push({
-        role: m.role, text: m.text, ts: m.ts || 0,
-        reasoning: m.reasoning || "", images: remapImages(m.images),
-        branchAnchor: !!m.branchAnchor,
-      });
+      msgs.push(cleanMsgs([{ ...m, images: remapImages(m.images) }])[0]);
     }
     list.push({
       id, name: c.name || "未命名", persona: c.persona || "", anchors: c.anchors || "",
@@ -2587,12 +2638,7 @@ async function importOwnZip(zip, maniEntry) {
     });
     await kvSet(msgsKey(id), msgs);
     const branches = Array.isArray(c.branches) && c.branches.length
-      ? c.branches.map((branch) => branch.map((bm, bi) => ({
-          role: bm.role, text: bm.text, ts: bm.ts || 0,
-          reasoning: bm.reasoning || "",
-          images: remapImages(bm.images),
-          branchAnchor: !!bm.branchAnchor,
-        })))
+      ? c.branches.map((branch) => branch.map((bm) => cleanMsgs([{ ...bm, images: remapImages(bm.images) }])[0]))
       : [msgs];
     await kvSet(branchesKey(id), branches);
     await kvSet(branchKey(id), Math.max(0, Math.min(Number(c.branchIdx) || 0, branches.length - 1)));

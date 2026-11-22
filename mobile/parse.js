@@ -135,7 +135,7 @@ export function pickHistory(messages, budget, reserve = 1200) {
 
 export const PACK_TAG = "rehydrate-mobile";
 
-const cleanMsgs = (msgs) => (msgs || []).map((m) => ({
+export const cleanMsgs = (msgs) => (msgs || []).map((m) => ({
   role: m.role, text: m.text, ts: m.ts || 0,
   reasoning: m.reasoning || "", images: m.images || [],
   status: m.status || "done", finishReason: m.finishReason || "",
