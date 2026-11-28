@@ -4,7 +4,7 @@
 // 现在改成：联网时永远走网络拿最新的；断网才回退到缓存。
 // 代价是每次打开多一次请求，本地几十 KB，可以忽略。
 
-const CACHE = "rehydrate-v57";
+const CACHE = "rehydrate-v58";
 const ASSETS = [
   "./",
   "./index.html",

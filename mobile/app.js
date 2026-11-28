@@ -1093,6 +1093,44 @@ function appendHighlighted(node, text, query) {
   if (from < text.length) node.appendChild(document.createTextNode(text.slice(from)));
 }
 
+function openConcepts() {
+  if (document.querySelector(".concept-mask")) return;
+  const mask = document.createElement("div");
+  mask.className = "search-mask concept-mask";
+  mask.innerHTML = `
+    <div class="search-dialog concept-dialog" role="dialog" aria-modal="true" aria-label="几个概念">
+      <div class="search-head">
+        <svg class="search-ic-lg" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 1 1 4.2 2.1c-.9.7-1.7 1.2-1.7 2.4"/><path d="M12 17h.01"/></svg>
+        <b>几个概念</b>
+        <button class="icon" id="conceptClose" aria-label="关闭">✕</button>
+      </div>
+      <div class="concept-body">
+        <section class="concept-item">
+          <h4>上下文记忆</h4>
+          <p>不是永久记忆。每轮会把当前对话最近的消息放进请求，人设和锚点每轮都带。设置里的「上下文预算」决定最多带多少，超出的最早消息会被丢掉。</p>
+        </section>
+        <section class="concept-item">
+          <h4>输入 / 输出上限</h4>
+          <p>上下文预算是输入 + 输出合计，默认 128K，可设到 1M；单次输出默认 8192，可单独调。最终上限还要看模型和接口本身，超过预算会优先丢最早消息。</p>
+        </section>
+        <section class="concept-item">
+          <h4>历史搜索</h4>
+          <p>顶栏放大镜可搜索所有对话当前分支的正文，点结果会跳到那条消息；对话列表里的搜索只筛对话名称和最近一句。还能载入更早消息、导出备份、切换版本分支。图片内文字和其他版本分支暂时不搜。</p>
+        </section>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    mask.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
+  $("#conceptClose").onclick = close;
+  requestAnimationFrame(() => $("#conceptClose")?.focus());
+}
+
 async function openMessageSearch() {
   const existing = document.querySelector(".search-mask");
   if (existing) {
@@ -1725,6 +1763,7 @@ function renderChat() {
         <div class="brandmini" aria-hidden="true"><div class="mark"></div></div>
         <button class="icon" id="btnMenu" aria-label="对话列表"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h11"/></svg></button>
         <button class="icon" id="btnSearch" aria-label="搜索聊天内容"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></button>
+        <button class="icon" id="btnHelp" aria-label="概念说明" title="概念说明">?</button>
         <button class="icon wide-only" id="btnNewTop" aria-label="新建对话"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <button class="n" id="btnChats"><b id="cname"></b><span id="csub"></span></button>
@@ -1773,6 +1812,7 @@ function renderChat() {
   $("#stream").addEventListener("keydown", onMsgKeydown);
   $("#btnMenu").onclick = () => openChatList();
   $("#btnSearch").onclick = () => openMessageSearch();
+  $("#btnHelp").onclick = () => openConcepts();
   $("#btnNewTop").onclick = () => {
     const name = prompt("新对话的名字", "新对话");
     if (name !== null) createChat(name.trim() || "新对话");
