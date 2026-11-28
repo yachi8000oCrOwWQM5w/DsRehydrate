@@ -1560,12 +1560,12 @@ async function onMsgAction(e) {
   }
 
   if (act === "prevBranch") {
-    await switchBranch(-1);
+    await switchBranch(idx, -1);
     return;
   }
 
   if (act === "nextBranch") {
-    await switchBranch(1);
+    await switchBranch(idx, 1);
     return;
   }
 
@@ -1657,18 +1657,45 @@ function onMsgKeydown(e) {
   }
 }
 
-async function switchBranch(delta) {
+const msgSig = (m) => JSON.stringify([
+  m.role, String(m.text || ""), (m.images || []).join("|"),
+]);
+const prefixSig = (msgs, end) => (end < 0 ? "[]" : JSON.stringify(msgs.slice(0, end + 1).map(msgSig)));
+const suffixSig = (msgs, start) => JSON.stringify(msgs.slice(start).map(msgSig));
+
+function branchGroupAt(idx) {
+  if (S.branches.length < 2) return null;
+  const target = S.msgs[idx];
+  if (!target || target.role !== "user") return null;
+  // 按这条消息之前的共同前缀分组，这样编辑过的提问仍属于同一个版本位。
+  const sig = prefixSig(S.msgs, idx - 1);
+  const group = [];
+  S.branches.forEach((b, gi) => {
+    if (!b[idx] || b[idx].role !== "user") return;
+    if (prefixSig(b, idx - 1) === sig) group.push({ gi, msgs: b });
+  });
+  if (group.length < 2) return null;
+  if (new Set(group.map((g) => suffixSig(g.msgs, idx))).size < 2) return null;
+  const pos = group.findIndex((g) => g.gi === S.branchIdx);
+  if (pos < 0) return null;
+  return { group, pos, count: group.length };
+}
+
+async function switchBranch(idx, delta) {
   if (S.busy) return;
-  ensureBranches();
-  if (S.branches.length < 2) return;
+  const info = branchGroupAt(idx);
+  if (!info) return;
+  const nextPos = (info.pos + delta + info.count) % info.count;
+  const target = info.group[nextPos];
+  if (!target || target.gi === S.branchIdx) return;
   S.branches[S.branchIdx] = S.msgs;
-  S.branchIdx = (S.branchIdx + delta + S.branches.length) % S.branches.length;
+  S.branchIdx = target.gi;
   resetEditState(true);
   renderPending?.();
   S.msgs = S.branches[S.branchIdx];
   S.showFrom = null;
   await saveActiveMsgs();
-  renderStream();
+  renderStream({ keepScroll: true });
 }
 
 
@@ -1980,17 +2007,6 @@ function renderStream(opts = {}) {
   const batch = mobile ? 36 : 60;
   if (S.showFrom == null) S.showFrom = Math.max(0, total - batch);
   const start = Math.min(S.showFrom, total);
-  let anchorIdx = S.msgs.findIndex((x) => x.role === "user" && x.branchAnchor);
-  if (S.branches.length > 1) {
-    let visible = anchorIdx >= start ? anchorIdx : -1;
-    if (visible < 0) {
-      for (let i = start; i < total; i++) {
-        if (S.msgs[i].role === "user") { visible = i; break; }
-      }
-    }
-    if (visible < 0 && start < total) visible = start;
-    anchorIdx = visible;
-  }
 
   let html = "";
   if (start > 0) {
@@ -2004,8 +2020,9 @@ function renderStream(opts = {}) {
     editing: S.editIdx === start + i,
     alwaysShow: (m.role === "user" && (start + i === total - 1 || start + i === total - 2))
       || (m.role !== "user" && start + i === total - 1),
-    branch: S.branches.length > 1 && ((m.role === "user" && m.branchAnchor) || start + i === anchorIdx)
-      ? { index: S.branchIdx, count: S.branches.length } : null,
+    branch: m.role === "user" && S.branches.length > 1
+      ? (() => { const g = branchGroupAt(start + i); return g ? { index: g.pos, count: g.count } : null; })()
+      : null,
   })).join("");
   el.innerHTML = html;
   el.scrollTop = keepScroll ? prevTop : el.scrollHeight;
